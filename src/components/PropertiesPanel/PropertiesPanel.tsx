@@ -169,15 +169,15 @@ function QueryExplorer() {
         <div className="explorer-meta">
           <span>
             {queryLoading
-              ? "Loading backend results..."
-              : `${queryResultCount} matching component${queryResultCount === 1 ? "" : "s"}`}
+              ? "Loading indexed matches..."
+              : `${queryResultCount} indexed match${queryResultCount === 1 ? "" : "es"}`}
           </span>
           <span>
             {queryResultTruncated
               ? `Showing first ${queryResults.length} results`
               : queryResults.length > 0
                 ? `Showing all ${queryResults.length}`
-                : "Choose a filter to start exploring"}
+                : "Choose a type to load indexed matches"}
           </span>
         </div>
       </div>
@@ -199,12 +199,12 @@ function QueryExplorer() {
         </div>
       ) : queryResults.length === 0 && !queryLoading ? (
         <div className="results-empty">
-          <h3>No components matched</h3>
+          <h3>No indexed matches</h3>
           <p>Try a different type for this indexed backend version.</p>
         </div>
       ) : (
         <section className="results-group">
-          <h4>Component matches</h4>
+          <h4>Indexed matches</h4>
           <ul className="results-group__changes explorer-results">
             {queryResults.map((component) => (
               <li key={component.componentGuid}>
