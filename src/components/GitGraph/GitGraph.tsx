@@ -13,8 +13,8 @@ import { CommitNode } from "./CommitNode";
 import { buildGitGraph } from "./gitGraphLayout";
 
 const nodeTypes: NodeTypes = {
-  branchLabel: BranchNode,
-  milestone: CommitNode,
+  branch: BranchNode,
+  commit: CommitNode,
 };
 
 export function GitGraph() {
@@ -39,19 +39,19 @@ export function GitGraph() {
             fitView
             nodeTypes={nodeTypes}
             colorMode="dark"
-            minZoom={0.45}
-            maxZoom={1.2}
+            minZoom={0.35}
+            maxZoom={1.3}
             panOnDrag
             nodesDraggable={false}
             elementsSelectable
             onNodeClick={(_, node) => {
-              if (node.type === "milestone" && typeof node.data?.sha === "string") {
-                setActiveSha(node.data.sha);
+              if (node.type === "commit") {
+                setActiveSha(node.id);
               }
             }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background gap={22} size={1} />
+            <Background gap={20} size={1} />
             <Controls showInteractive={false} />
           </ReactFlow>
         </ReactFlowProvider>

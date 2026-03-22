@@ -1,11 +1,7 @@
 import type { NodeProps } from "@xyflow/react";
 
-import type { BranchLabelFlowNode } from "./gitFlowTypes";
+import type { BranchFlowNode } from "../../types/git";
 
-export function BranchNode({ data }: NodeProps<BranchLabelFlowNode>) {
-  return (
-    <div className={`gitflow-label gitflow-label--${data.colorToken}`} title={data.branchName}>
-      {data.displayName}
-    </div>
-  );
+export function BranchNode({ data }: NodeProps<BranchFlowNode>) {
+  return <div className="branch-pill">{data.name}</div>;
 }
