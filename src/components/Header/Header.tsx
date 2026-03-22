@@ -66,14 +66,14 @@ export function Header({ isConnecting, error, onConnect, onBranchChange }: Heade
         </label>
 
         <label className="field field--compact">
-          <span className="field__label">IFC file</span>
+          <span className="field__label">Model</span>
           <select
             value={selectedFilePath ?? ""}
-            onChange={(event) => setSelectedFilePath(event.target.value)}
+            onChange={(event) => setSelectedFilePath(event.target.value || null)}
             disabled={availableIfcPaths.length === 0}
           >
             <option value="" disabled>
-              Select .ifc
+              Select IFC model
             </option>
             {availableIfcPaths.map((path) => (
               <option key={path} value={path}>

@@ -4,7 +4,7 @@ import { fetchIfcBuffer } from "../lib/github";
 import { useAppStore } from "../store/useAppStore";
 
 export function useIfcLoader(
-  loadIfc: (buffer: ArrayBuffer) => Promise<unknown>,
+  loadIfc: (buffer: ArrayBuffer, requestKey: string) => Promise<unknown>,
   loadIfcPathsForSha: (sha: string) => Promise<string[]>,
 ) {
   const repo = useAppStore((state) => state.repo);
@@ -32,17 +32,22 @@ export function useIfcLoader(
           return;
         }
 
+        const trackedPath = activePath ?? null;
         const resolvedPath =
-          activePath && availablePaths.includes(activePath)
-            ? activePath
-            : availablePaths[0] ?? null;
+          trackedPath && availablePaths.includes(trackedPath)
+            ? trackedPath
+            : trackedPath
+              ? null
+              : availablePaths[0] ?? null;
 
         setAvailableIfcPaths(availablePaths, resolvedPath);
 
         if (!resolvedPath) {
           setLoadState({
             loading: false,
-            loadError: "No .ifc files were found in this commit.",
+            loadError: trackedPath
+              ? `Tracked IFC file is not present in commit ${sha.slice(0, 7)}.`
+              : "No .ifc files were found in this commit.",
             loadProgress: 0,
           });
           lastRequestKeyRef.current = null;
@@ -60,7 +65,7 @@ export function useIfcLoader(
           return;
         }
 
-        await loadIfc(buffer);
+        await loadIfc(buffer, requestKey);
       } catch (caughtError) {
         const message =
           caughtError instanceof Error ? caughtError.message : "Failed to fetch the IFC file.";

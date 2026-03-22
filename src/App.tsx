@@ -1,25 +1,29 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { Header } from "./components/Header/Header";
 import { GitGraph } from "./components/GitGraph/GitGraph";
 import { PropertiesPanel } from "./components/PropertiesPanel/PropertiesPanel";
-import { RepoFilesPanel } from "./components/RepoFilesPanel/RepoFilesPanel";
-import { Timeline } from "./components/Timeline/Timeline";
 import { Viewer3D } from "./components/Viewer3D/Viewer3D";
+import { ViewerVersionTimeline } from "./components/Viewer3D/ViewerVersionTimeline";
 import { useGitHub } from "./hooks/useGitHub";
 import { useAppStore } from "./store/useAppStore";
 
 export default function App() {
+  const autoConnectAttemptedRef = useRef(false);
   const branches = useAppStore((state) => state.branches);
   const commits = useAppStore((state) => state.commits);
   const activeSha = useAppStore((state) => state.activeSha);
-  const activePath = useAppStore((state) => state.activePath);
   const repo = useAppStore((state) => state.repo);
 
   const { connectRepo, selectBranch, loadIfcPathsForSha, isConnecting, error } = useGitHub();
 
   useEffect(() => {
+    if (autoConnectAttemptedRef.current) {
+      return;
+    }
+
     if (!repo && !isConnecting) {
+      autoConnectAttemptedRef.current = true;
       void connectRepo();
     }
   }, [connectRepo, isConnecting, repo]);
@@ -51,16 +55,11 @@ export default function App() {
           </div>
 
           <GitGraph />
-          <RepoFilesPanel />
-          <Timeline />
         </section>
 
         <section className="workspace-grid__center">
           <Viewer3D loadIfcPathsForSha={loadIfcPathsForSha} />
-          <div className="footnote-bar">
-            <span>Current IFC path</span>
-            <strong>{activePath ?? "No IFC file selected yet"}</strong>
-          </div>
+          <ViewerVersionTimeline />
         </section>
 
         <PropertiesPanel />

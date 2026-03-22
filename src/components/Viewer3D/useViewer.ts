@@ -95,6 +95,7 @@ export function useViewer() {
   const parserRef = useRef<IfcParser | null>(null);
   const geometryRef = useRef<GeometryProcessor | null>(null);
   const rendererRef = useRef<Renderer | null>(null);
+  const latestLoadRequestRef = useRef<string | null>(null);
 
   const currentStore = useAppStore((state) => state.currentStore);
   const selectedExpressId = useAppStore((state) => state.selectedExpressId);
@@ -218,7 +219,7 @@ export function useViewer() {
   }, [renderScene, selectedExpressId]);
 
   const loadIfc = useCallback(
-    async (buffer: ArrayBuffer) => {
+    async (buffer: ArrayBuffer, requestKey: string) => {
       const parser = parserRef.current;
       const geometry = geometryRef.current;
       const renderer = rendererRef.current;
@@ -227,6 +228,7 @@ export function useViewer() {
         throw new Error("Viewer is not ready yet.");
       }
 
+      latestLoadRequestRef.current = requestKey;
       setLoadState({
         loading: true,
         loadError: null,
@@ -237,11 +239,19 @@ export function useViewer() {
         const uint8 = new Uint8Array(buffer);
         const store = await parser.parseColumnar(buffer, {
           onProgress: ({ percent }) => {
-            setLoadState({ loadProgress: percent });
+            if (latestLoadRequestRef.current === requestKey) {
+              setLoadState({ loadProgress: percent });
+            }
           },
         });
 
         const geometryResult = await geometry.process(uint8);
+        if (latestLoadRequestRef.current !== requestKey) {
+          return null;
+        }
+
+        renderer.getScene().clear();
+        renderer.clearCaches();
         resizeRenderer();
         renderer.loadGeometry(geometryResult);
         renderer.fitToView();
@@ -258,6 +268,10 @@ export function useViewer() {
 
         return store;
       } catch (caughtError) {
+        if (latestLoadRequestRef.current !== requestKey) {
+          return null;
+        }
+
         const message =
           caughtError instanceof Error
             ? caughtError.message

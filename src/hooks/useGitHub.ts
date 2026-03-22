@@ -37,13 +37,35 @@ function readCache<T>(key: string) {
 }
 
 function writeCache<T>(key: string, value: T) {
-  localStorage.setItem(
-    key,
-    JSON.stringify({
-      savedAt: Date.now(),
-      value,
-    }),
-  );
+  const payload = JSON.stringify({
+    savedAt: Date.now(),
+    value,
+  });
+
+  try {
+    localStorage.setItem(key, payload);
+  } catch {
+    try {
+      const cacheEntries = Object.keys(localStorage)
+        .filter((entryKey) => entryKey.startsWith("ifc-git-viewer:"))
+        .map((entryKey) => {
+          const cached = readCache<{ savedAt?: number }>(entryKey);
+          return {
+            key: entryKey,
+            savedAt: cached?.savedAt ?? 0,
+          };
+        })
+        .sort((left, right) => left.savedAt - right.savedAt);
+
+      for (const entry of cacheEntries.slice(0, 5)) {
+        localStorage.removeItem(entry.key);
+      }
+
+      localStorage.setItem(key, payload);
+    } catch {
+      // Cache writes are optional; ignore storage quota issues.
+    }
+  }
 }
 
 function getCachedValue<T>(key: string, maxAgeMs = 5 * 60 * 1000) {
@@ -209,9 +231,15 @@ export function useGitHub(): UseGitHubResult {
         );
         const nextSha = branch?.sha ?? branchCommits[0]?.sha ?? null;
         const nextIfcPaths = nextSha ? await loadIfcFiles(repo, nextSha, authToken) : [];
+        const nextTrackedPath =
+          selectedFilePath && nextIfcPaths.includes(selectedFilePath)
+            ? selectedFilePath
+            : selectedFilePath
+              ? null
+              : nextIfcPaths[0] ?? null;
 
         setCommits(mergedCommits);
-        setAvailableIfcPaths(nextIfcPaths, nextIfcPaths[0] ?? null);
+        setAvailableIfcPaths(nextIfcPaths, nextTrackedPath);
         setActiveSha(nextSha);
       } catch (caughtError) {
         const message =
@@ -219,7 +247,17 @@ export function useGitHub(): UseGitHubResult {
         setError(message);
       }
     },
-    [authToken, branches, commits, repo, setActiveSha, setAvailableIfcPaths, setCommits, setSelectedBranch],
+    [
+      authToken,
+      branches,
+      commits,
+      repo,
+      selectedFilePath,
+      setActiveSha,
+      setAvailableIfcPaths,
+      setCommits,
+      setSelectedBranch,
+    ],
   );
 
   const loadIfcPathsForSha = useCallback(
@@ -258,7 +296,9 @@ export function useGitHub(): UseGitHubResult {
         const nextSelectedFilePath =
           selectedFilePath && ifcPaths.includes(selectedFilePath)
             ? selectedFilePath
-            : ifcPaths[0] ?? null;
+            : selectedFilePath
+              ? null
+              : ifcPaths[0] ?? null;
 
         setRepoFileTree({
           sha: activeShaRef,
