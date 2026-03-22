@@ -122,7 +122,7 @@ function persistLastActiveSha(sha: string | null) {
 
 export const useAppStore = create<AppState>((set) => ({
   repoInput: SAMPLE_REPO_URL,
-  authToken: import.meta.env.VITE_GITHUB_TOKEN ?? "",
+  authToken: "",
   repo: null,
   branches: [],
   selectedBranch: null,

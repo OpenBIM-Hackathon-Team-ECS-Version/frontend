@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 
 import { getFileCommitHistory } from "../lib/github";
-import { getIfcDiff } from "../lib/api";
+import { getGitHubComponentDetails, getIfcDiff } from "../lib/api";
 import { useAppStore } from "../store/useAppStore";
-import type { IfcDiffResult } from "../types/ifc";
+import type { IfcDiffDetail, IfcDiffResult } from "../types/ifc";
 
 export function useIfcDiff(
   applyDiff: (diff: IfcDiffResult | null) => void,
@@ -67,11 +67,53 @@ export function useIfcDiff(
           githubToken: authToken,
         });
 
+        const currentGuids = Array.from(new Set([...diff.added, ...diff.changed]));
+        const deletedGuids = Array.from(diff.deleted);
+        const emptyDetailMap: Record<string, IfcDiffDetail> = {};
+        const [currentDetails, deletedDetails] = await Promise.all([
+          currentGuids.length > 0
+            ? getGitHubComponentDetails(
+                resolvedRepo,
+                resolvedActiveSha,
+                resolvedActivePath,
+                currentGuids,
+                authToken,
+              )
+            : Promise.resolve(emptyDetailMap),
+          deletedGuids.length > 0
+            ? getGitHubComponentDetails(
+                resolvedRepo,
+                previousRevisionSha,
+                resolvedActivePath,
+                deletedGuids,
+                authToken,
+              )
+            : Promise.resolve(emptyDetailMap),
+        ]);
+
         if (cancelled) {
           return;
         }
 
-        setDiffResult(diff);
+        const detailsById = { ...diff.detailsById };
+        [currentDetails, deletedDetails].forEach((detailMap) => {
+          Object.entries(detailMap).forEach(([globalId, detail]) => {
+            detailsById[globalId] = {
+              ...detail,
+              ...(detailsById[globalId] ?? {}),
+              name: detail.name,
+              description: detail.description,
+              objectType: detail.objectType,
+              tag: detail.tag,
+              type: detail.type,
+            };
+          });
+        });
+
+        setDiffResult({
+          ...diff,
+          detailsById,
+        });
       } catch (caughtError) {
         if (cancelled) {
           return;

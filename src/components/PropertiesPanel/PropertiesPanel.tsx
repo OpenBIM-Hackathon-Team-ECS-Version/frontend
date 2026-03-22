@@ -17,6 +17,48 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+function DiffDetailList() {
+  const diffResult = useAppStore((state) => state.diffResult);
+  const detailItems = diffResult
+    ? Object.values(diffResult.detailsById).sort((left, right) => {
+        const statusOrder = { changed: 0, added: 1, deleted: 2 } as const;
+        return (
+          statusOrder[left.status] - statusOrder[right.status] ||
+          left.type.localeCompare(right.type) ||
+          left.globalId.localeCompare(right.globalId)
+        );
+      })
+    : [];
+
+  return (
+    <section className="results-group">
+      <h4>Component details</h4>
+      {detailItems.length === 0 ? (
+        <p className="results-group__empty">No detailed component metadata reported.</p>
+      ) : (
+        <ul className="results-group__changes">
+          {detailItems.map((detail) => (
+            <li key={detail.globalId}>
+              <strong>{detail.globalId}</strong>
+              <span>
+                {detail.status} · {detail.type}
+                {detail.previousType && detail.previousType !== detail.type
+                  ? ` (was ${detail.previousType})`
+                  : ""}
+              </span>
+              <code>
+                {[detail.name, detail.objectType, detail.tag].filter(Boolean).join(" · ") ||
+                  detail.description ||
+                  "No descriptive fields"}
+              </code>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function PropertiesPanel() {
   const diffHighlightEnabled = useAppStore((state) => state.diffHighlightEnabled);
   const diffResult = useAppStore((state) => state.diffResult);
@@ -89,6 +131,7 @@ export function PropertiesPanel() {
             )}
           </section>
 
+          <DiffDetailList />
           <ResultList title="Added IDs" items={added} />
           <ResultList title="Changed IDs" items={changed} />
           <ResultList title="Deleted IDs" items={deleted} />

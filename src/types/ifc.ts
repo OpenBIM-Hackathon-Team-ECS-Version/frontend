@@ -5,6 +5,19 @@ export interface IfcDiffResult {
   deleted: Set<string>;
   changed: Set<string>;
   changesById: Record<string, { type: string; fields: string[] }>;
+  detailsById: Record<string, IfcDiffDetail>;
+}
+
+export interface IfcDiffDetail {
+  globalId: string;
+  status: "added" | "changed" | "deleted";
+  type: string;
+  previousType?: string | null;
+  name: string | null;
+  description: string | null;
+  objectType: string | null;
+  tag: string | null;
+  changedFields: string[];
 }
 
 export interface IfcPropertyItem {
