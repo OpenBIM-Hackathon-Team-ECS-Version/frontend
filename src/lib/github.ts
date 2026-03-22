@@ -10,10 +10,59 @@ export const SAMPLE_REPO: RepoRef = {
   name: "Sample-IFC-Files",
 };
 
+const requestCache = new Map<string, { savedAt: number; value: unknown }>();
+const inFlightRequests = new Map<string, Promise<unknown>>();
+const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
+
 function createOctokit(token?: string) {
   return new Octokit({
     auth: token?.trim() ? token.trim() : undefined,
   });
+}
+
+function getCachedRequest<T>(key: string, maxAgeMs = DEFAULT_CACHE_TTL_MS) {
+  const cached = requestCache.get(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.savedAt > maxAgeMs) {
+    requestCache.delete(key);
+    return null;
+  }
+
+  return cached.value as T;
+}
+
+function setCachedRequest<T>(key: string, value: T) {
+  requestCache.set(key, {
+    savedAt: Date.now(),
+    value,
+  });
+}
+
+async function getOrCreateRequest<T>(key: string, load: () => Promise<T>) {
+  const cached = getCachedRequest<T>(key);
+  if (cached !== null) {
+    return cached;
+  }
+
+  const inFlight = inFlightRequests.get(key);
+  if (inFlight) {
+    return (await inFlight) as T;
+  }
+
+  const promise = load()
+    .then((value) => {
+      setCachedRequest(key, value);
+      return value;
+    })
+    .finally(() => {
+      inFlightRequests.delete(key);
+    });
+
+  inFlightRequests.set(key, promise);
+  return (await promise) as T;
 }
 
 const relativeFormatter = new Intl.RelativeTimeFormat("en", {
@@ -53,6 +102,30 @@ function normalizeBranchName(name: string) {
 
 function toShortSha(sha: string) {
   return sha.slice(0, 7);
+}
+
+function toGitCommit(
+  commit: Awaited<ReturnType<Octokit["repos"]["listCommits"]>>["data"][number],
+  branchName: string,
+): GitCommit {
+  const authoredAt =
+    commit.commit.author?.date ?? commit.commit.committer?.date ?? new Date().toISOString();
+
+  return {
+    sha: commit.sha,
+    shortSha: toShortSha(commit.sha),
+    message: commit.commit.message,
+    authoredAt,
+    relativeTime: formatRelativeTime(authoredAt),
+    authorName:
+      commit.commit.author?.name ??
+      commit.author?.login ??
+      commit.commit.committer?.name ??
+      "Unknown author",
+    authorAvatarUrl: commit.author?.avatar_url ?? null,
+    parentShas: commit.parents.map((parent) => parent.sha),
+    branchNames: [branchName],
+  };
 }
 
 export function parseRepoInput(input: string): RepoRef | null {
@@ -112,28 +185,33 @@ export async function getCommits(
     per_page: perPage,
   });
 
-  return data.map<GitCommit>((commit) => {
-    const authoredAt =
-      commit.commit.author?.date ??
-      commit.commit.committer?.date ??
-      new Date().toISOString();
+  return data.map((commit) => toGitCommit(commit, branch));
+}
 
-    return {
-      sha: commit.sha,
-      shortSha: toShortSha(commit.sha),
-      message: commit.commit.message,
-      authoredAt,
-      relativeTime: formatRelativeTime(authoredAt),
-      authorName:
-        commit.commit.author?.name ??
-        commit.author?.login ??
-        commit.commit.committer?.name ??
-        "Unknown author",
-      authorAvatarUrl: commit.author?.avatar_url ?? null,
-      parentShas: commit.parents.map((parent) => parent.sha),
-      branchNames: [branch],
-    };
+export async function getFileCommitHistory(
+  repo: RepoRef,
+  ref: string,
+  path: string,
+  token?: string,
+  perPage = 10,
+) {
+  const normalizedPath = path.trim();
+  const effectivePerPage = Math.max(perPage, 20);
+  const cacheKey = `${repo.owner}/${repo.name}:file-history:${ref}:${normalizedPath}`;
+  const commits = await getOrCreateRequest(cacheKey, async () => {
+    const octokit = createOctokit(token);
+    const { data } = await octokit.repos.listCommits({
+      owner: repo.owner,
+      repo: repo.name,
+      sha: ref,
+      path: normalizedPath,
+      per_page: effectivePerPage,
+    });
+
+    return data.map((commit) => toGitCommit(commit, ref));
   });
+
+  return commits.slice(0, perPage);
 }
 
 export async function findIfcFiles(repo: RepoRef, sha: string, token?: string) {
@@ -189,6 +267,17 @@ export async function fetchIfcBuffer(
   path: string,
   token?: string,
 ) {
+  const rawUrl = `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/${sha}/${path}`;
+
+  try {
+    const rawResponse = await fetch(rawUrl);
+    if (rawResponse.ok) {
+      return rawResponse.arrayBuffer();
+    }
+  } catch {
+    // Fall back to the GitHub API below when raw fetch fails.
+  }
+
   if (token?.trim()) {
     const octokit = createOctokit(token);
     const { data } = await octokit.repos.getContent({
@@ -206,9 +295,7 @@ export async function fetchIfcBuffer(
     }
   }
 
-  const url = `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/${sha}/${path}`;
-  const response = await fetch(url);
-
+  const response = await fetch(rawUrl);
   if (!response.ok) {
     throw new Error(`Failed to fetch IFC file (${response.status})`);
   }

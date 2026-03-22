@@ -1,38 +1,32 @@
 import { useAppStore } from "../../store/useAppStore";
 
-function PropertyGroup({
-  title,
-  entries,
-}: {
-  title: string;
-  entries: Array<{ name: string; value: string }>;
-}) {
-  if (entries.length === 0) {
-    return null;
-  }
-
+function ResultList({ title, items }: { title: string; items: string[] }) {
   return (
-    <section className="properties-group">
+    <section className="results-group">
       <h4>{title}</h4>
-      <dl>
-        {entries.map((entry) => (
-          <div key={`${title}-${entry.name}`} className="properties-group__row">
-            <dt>{entry.name}</dt>
-            <dd>{entry.value}</dd>
-          </div>
-        ))}
-      </dl>
+      {items.length === 0 ? (
+        <p className="results-group__empty">None</p>
+      ) : (
+        <ul className="results-group__list">
+          {items.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
 
 export function PropertiesPanel() {
-  const selectedEntity = useAppStore((state) => state.selectedEntity);
   const diffResult = useAppStore((state) => state.diffResult);
+  const added = diffResult ? Array.from(diffResult.added).sort() : [];
+  const changed = diffResult ? Array.from(diffResult.changed).sort() : [];
+  const deleted = diffResult ? Array.from(diffResult.deleted).sort() : [];
+  const changeEntries = diffResult ? Object.entries(diffResult.changesById) : [];
 
   return (
     <aside className="panel panel--properties">
-      <div className="panel__eyebrow">Properties</div>
+      <div className="panel__eyebrow">Results</div>
 
       <div className="diff-summary">
         <div className="diff-summary__item">
@@ -44,43 +38,49 @@ export function PropertiesPanel() {
           <strong>{diffResult?.changed.size ?? 0}</strong>
         </div>
         <div className="diff-summary__item">
-          <span>Removed</span>
-          <strong>{diffResult?.removed.size ?? 0}</strong>
+          <span>Deleted</span>
+          <strong>{diffResult?.deleted.size ?? 0}</strong>
         </div>
       </div>
 
-      {!selectedEntity ? (
-        <div className="properties-empty">
-          <h3>No entity selected</h3>
-          <p>Click geometry in the viewer to inspect IFC attributes, property sets, and quantities.</p>
+      {!diffResult ? (
+        <div className="results-empty">
+          <h3>No diff data yet</h3>
+          <p>
+            The current tracked model either has no previous revision in the selected GitHub repo or is
+            not an IFC revision the viewer can load.
+          </p>
         </div>
       ) : (
-        <div className="properties-detail">
-          <header className="properties-detail__header">
-            <div className="properties-detail__type">{selectedEntity.type}</div>
-            <h3>{selectedEntity.name ?? `#${selectedEntity.expressId}`}</h3>
-            <p>{selectedEntity.globalId ?? "No GlobalId available"}</p>
+        <div className="results-detail">
+          <header className="results-detail__header">
+            <h3>Compared revisions</h3>
+            <p>
+              Base <strong>{diffResult.baseSha.slice(0, 7)}</strong> to current{" "}
+              <strong>{diffResult.compareSha.slice(0, 7)}</strong>
+            </p>
           </header>
 
-          <PropertyGroup
-            title="Entity"
-            entries={[
-              { name: "Express ID", value: String(selectedEntity.expressId) },
-              { name: "Description", value: selectedEntity.description ?? "—" },
-              { name: "Object type", value: selectedEntity.objectType ?? "—" },
-              { name: "Tag", value: selectedEntity.tag ?? "—" },
-            ]}
-          />
+          <section className="results-group">
+            <h4>Changed fields</h4>
+            {changeEntries.length === 0 ? (
+              <p className="results-group__empty">No changed fields reported.</p>
+            ) : (
+              <ul className="results-group__changes">
+                {changeEntries.map(([guid, change]) => (
+                  <li key={guid}>
+                    <strong>{guid}</strong>
+                    <span>{change.type}</span>
+                    <code>{change.fields.join(", ") || "No field list"}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-          <PropertyGroup title="Named attributes" entries={selectedEntity.attributes} />
-
-          {selectedEntity.propertySets.map((group) => (
-            <PropertyGroup key={group.name} title={group.name} entries={group.entries} />
-          ))}
-
-          {selectedEntity.quantitySets.map((group) => (
-            <PropertyGroup key={group.name} title={group.name} entries={group.entries} />
-          ))}
+          <ResultList title="Added IDs" items={added} />
+          <ResultList title="Changed IDs" items={changed} />
+          <ResultList title="Deleted IDs" items={deleted} />
         </div>
       )}
     </aside>

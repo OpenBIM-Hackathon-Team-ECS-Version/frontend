@@ -75,7 +75,7 @@ function buildCommitMap(commits: GitCommit[]) {
 
 export const useAppStore = create<AppState>((set) => ({
   repoInput: SAMPLE_REPO_URL,
-  authToken: "",
+  authToken: import.meta.env.VITE_GITHUB_TOKEN ?? "",
   repo: null,
   branches: [],
   selectedBranch: null,

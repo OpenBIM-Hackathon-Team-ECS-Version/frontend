@@ -1,7 +1,10 @@
 export interface IfcDiffResult {
+  baseSha: string;
+  compareSha: string;
   added: Set<string>;
-  removed: Set<string>;
+  deleted: Set<string>;
   changed: Set<string>;
+  changesById: Record<string, { type: string; fields: string[] }>;
 }
 
 export interface IfcPropertyItem {
