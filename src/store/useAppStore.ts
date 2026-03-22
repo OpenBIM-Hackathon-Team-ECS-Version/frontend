@@ -7,6 +7,9 @@ import type { GitBranch, GitCommit, RepoRef } from "../types/git";
 import type { IfcDiffResult, SelectedIfcEntity } from "../types/ifc";
 import type { RepoFileNode } from "../types/repo";
 
+const LAST_MODEL_PATH_STORAGE_KEY = "ifc-git-viewer:last-model-path";
+const LAST_ACTIVE_SHA_STORAGE_KEY = "ifc-git-viewer:last-active-sha";
+
 interface AppState {
   repoInput: string;
   authToken: string;
@@ -29,6 +32,7 @@ interface AppState {
   loadProgress: number;
   loadError: string | null;
   entityCount: number;
+  diffHighlightEnabled: boolean;
   diffResult: IfcDiffResult | null;
   selectedExpressId: number | null;
   selectedEntity: SelectedIfcEntity | null;
@@ -62,6 +66,7 @@ interface AppState {
   setLoadState: (
     payload: Partial<Pick<AppState, "loading" | "loadProgress" | "loadError" | "entityCount">>,
   ) => void;
+  setDiffHighlightEnabled: (enabled: boolean) => void;
   setDiffResult: (diff: IfcDiffResult | null) => void;
   setSelectedExpressId: (expressId: number | null) => void;
   setSelectedEntity: (entity: SelectedIfcEntity | null) => void;
@@ -71,6 +76,48 @@ interface AppState {
 
 function buildCommitMap(commits: GitCommit[]) {
   return new Map(commits.map((commit) => [commit.sha, commit]));
+}
+
+function readLastModelPath() {
+  try {
+    return localStorage.getItem(LAST_MODEL_PATH_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function persistLastModelPath(path: string | null) {
+  try {
+    if (path) {
+      localStorage.setItem(LAST_MODEL_PATH_STORAGE_KEY, path);
+      return;
+    }
+
+    localStorage.removeItem(LAST_MODEL_PATH_STORAGE_KEY);
+  } catch {
+    // Persisting the user's last model selection is optional.
+  }
+}
+
+function readLastActiveSha() {
+  try {
+    return localStorage.getItem(LAST_ACTIVE_SHA_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function persistLastActiveSha(sha: string | null) {
+  try {
+    if (sha) {
+      localStorage.setItem(LAST_ACTIVE_SHA_STORAGE_KEY, sha);
+      return;
+    }
+
+    localStorage.removeItem(LAST_ACTIVE_SHA_STORAGE_KEY);
+  } catch {
+    // Persisting the user's last active commit is optional.
+  }
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -84,9 +131,9 @@ export const useAppStore = create<AppState>((set) => ({
   repoTreeSha: null,
   repoFileTree: [],
   repoFileMap: new Map(),
-  selectedFilePath: null,
+  selectedFilePath: readLastModelPath(),
   availableIfcPaths: [],
-  activeSha: null,
+  activeSha: readLastActiveSha(),
   activePath: null,
   prevSha: null,
   webGpuSupported: true,
@@ -95,6 +142,7 @@ export const useAppStore = create<AppState>((set) => ({
   loadProgress: 0,
   loadError: null,
   entityCount: 0,
+  diffHighlightEnabled: true,
   diffResult: null,
   selectedExpressId: null,
   selectedEntity: null,
@@ -103,39 +151,61 @@ export const useAppStore = create<AppState>((set) => ({
   setRepoInput: (value) => set({ repoInput: value }),
   setAuthToken: (value) => set({ authToken: value }),
   setRepoContext: ({ repo, branches, selectedBranch, commits, availableIfcPaths, activeSha, activePath }) =>
-    set({
-      repo,
-      branches,
-      selectedBranch,
-      commits,
-      commitMap: buildCommitMap(commits),
-      repoTreeSha: activeSha,
-      repoFileTree: [],
-      repoFileMap: new Map(),
-      selectedFilePath: activePath,
-      availableIfcPaths,
-      activeSha,
-      activePath,
-      prevSha: null,
-      loadError: null,
-      diffResult: null,
-      selectedExpressId: null,
-      selectedEntity: null,
-      currentStore: null,
-      previousStore: null,
+    set((state) => {
+      const persistedPath = readLastModelPath();
+      const persistedSha = readLastActiveSha();
+      const nextActiveSha =
+        (persistedSha && commits.some((commit) => commit.sha === persistedSha) ? persistedSha : null) ??
+        activeSha;
+      const nextSelectedFilePath =
+        (persistedPath && availableIfcPaths.includes(persistedPath) ? persistedPath : null) ??
+        (state.selectedFilePath && availableIfcPaths.includes(state.selectedFilePath)
+          ? state.selectedFilePath
+          : null) ??
+        activePath;
+
+      persistLastModelPath(nextSelectedFilePath);
+      persistLastActiveSha(nextActiveSha);
+
+      return {
+        repo,
+        branches,
+        selectedBranch,
+        commits,
+        commitMap: buildCommitMap(commits),
+        repoTreeSha: nextActiveSha,
+        repoFileTree: [],
+        repoFileMap: new Map(),
+        selectedFilePath: nextSelectedFilePath,
+        availableIfcPaths,
+        activeSha: nextActiveSha,
+        activePath: nextSelectedFilePath,
+        prevSha: null,
+        loadError: null,
+        diffResult: null,
+        selectedExpressId: null,
+        selectedEntity: null,
+        currentStore: null,
+        previousStore: null,
+      };
     }),
   setSelectedBranch: (branch) => set({ selectedBranch: branch }),
   setCommits: (commits) => set({ commits, commitMap: buildCommitMap(commits) }),
   setRepoFileTree: ({ sha, tree, fileMap, availableIfcPaths, selectedFilePath = null }) =>
     set((state) => {
+      const persistedPath = readLastModelPath();
       const nextSelectedFilePath =
         selectedFilePath ??
-        state.selectedFilePath ??
-        state.activePath ??
+        (persistedPath && availableIfcPaths.includes(persistedPath) ? persistedPath : null) ??
+        (state.selectedFilePath && availableIfcPaths.includes(state.selectedFilePath)
+          ? state.selectedFilePath
+          : null) ??
+        (state.activePath && availableIfcPaths.includes(state.activePath) ? state.activePath : null) ??
         availableIfcPaths[0] ??
         null;
 
       const resolvedActivePath = nextSelectedFilePath ?? availableIfcPaths[0] ?? null;
+      persistLastModelPath(resolvedActivePath);
 
       return {
         repoTreeSha: sha,
@@ -148,32 +218,46 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   setAvailableIfcPaths: (paths, activePath = null) =>
     set((state) => {
-      const resolvedPath = activePath ?? paths[0] ?? null;
+      const persistedPath = readLastModelPath();
+      const resolvedPath =
+        (activePath && paths.includes(activePath) ? activePath : null) ??
+        (persistedPath && paths.includes(persistedPath) ? persistedPath : null) ??
+        (state.selectedFilePath && paths.includes(state.selectedFilePath)
+          ? state.selectedFilePath
+          : null) ??
+        paths[0] ??
+        null;
+
+      persistLastModelPath(resolvedPath);
 
       return {
         availableIfcPaths: paths,
-        selectedFilePath:
-          state.selectedFilePath && paths.includes(state.selectedFilePath)
-            ? state.selectedFilePath
-            : resolvedPath,
+        selectedFilePath: resolvedPath,
         activePath: resolvedPath,
       };
     }),
   setSelectedFilePath: (path) =>
-    set({
-      selectedFilePath: path,
-      activePath: path,
+    set(() => {
+      persistLastModelPath(path);
+      return {
+        selectedFilePath: path,
+        activePath: path,
+      };
     }),
   setActivePath: (path) => set({ activePath: path }),
   setActiveSha: (sha) =>
-    set((state) => ({
-      activeSha: sha,
-      prevSha: state.activeSha && state.activeSha !== sha ? state.activeSha : state.prevSha,
-      selectedExpressId: null,
-      selectedEntity: null,
-    })),
+    set((state) => {
+      persistLastActiveSha(sha);
+      return {
+        activeSha: sha,
+        prevSha: state.activeSha && state.activeSha !== sha ? state.activeSha : state.prevSha,
+        selectedExpressId: null,
+        selectedEntity: null,
+      };
+    }),
   setViewerFlags: (payload) => set(payload),
   setLoadState: (payload) => set(payload),
+  setDiffHighlightEnabled: (enabled) => set({ diffHighlightEnabled: enabled }),
   setDiffResult: (diff) => set({ diffResult: diff }),
   setSelectedExpressId: (expressId) => set({ selectedExpressId: expressId }),
   setSelectedEntity: (entity) =>

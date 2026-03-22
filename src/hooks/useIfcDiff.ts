@@ -14,7 +14,18 @@ export function useIfcDiff(
   const activeSha = useAppStore((state) => state.activeSha);
   const activePath = useAppStore((state) => state.activePath);
   const currentStore = useAppStore((state) => state.currentStore);
+  const diffHighlightEnabled = useAppStore((state) => state.diffHighlightEnabled);
+  const diffResult = useAppStore((state) => state.diffResult);
   const setDiffResult = useAppStore((state) => state.setDiffResult);
+
+  useEffect(() => {
+    if (!enabled || !currentStore) {
+      applyDiff(null);
+      return;
+    }
+
+    applyDiff(diffHighlightEnabled ? diffResult : null);
+  }, [applyDiff, currentStore, diffHighlightEnabled, diffResult, enabled]);
 
   useEffect(() => {
     if (!enabled || !currentStore || !repo || !activeSha || !activePath) {
@@ -61,7 +72,6 @@ export function useIfcDiff(
         }
 
         setDiffResult(diff);
-        applyDiff(diff);
       } catch (caughtError) {
         if (cancelled) {
           return;

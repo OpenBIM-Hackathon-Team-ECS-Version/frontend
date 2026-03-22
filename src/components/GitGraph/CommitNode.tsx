@@ -4,7 +4,9 @@ import type { CommitFlowNode } from "../../types/git";
 
 export function CommitNode({ data, selected }: NodeProps<CommitFlowNode>) {
   return (
-    <div className={`commit-card ${selected || data.isHead ? "is-active" : ""}`}>
+    <div
+      className={`commit-card ${selected || data.isHead ? "is-active" : ""} ${data.isRelevant ? "is-relevant" : "is-muted"}`}
+    >
       <Handle type="target" position={Position.Top} className="commit-card__handle" />
       <div className="commit-card__topline">
         <span className="commit-card__sha">{data.sha.slice(0, 7)}</span>

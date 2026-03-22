@@ -18,7 +18,9 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
 }
 
 export function PropertiesPanel() {
+  const diffHighlightEnabled = useAppStore((state) => state.diffHighlightEnabled);
   const diffResult = useAppStore((state) => state.diffResult);
+  const setDiffHighlightEnabled = useAppStore((state) => state.setDiffHighlightEnabled);
   const added = diffResult ? Array.from(diffResult.added).sort() : [];
   const changed = diffResult ? Array.from(diffResult.changed).sort() : [];
   const deleted = diffResult ? Array.from(diffResult.deleted).sort() : [];
@@ -27,6 +29,15 @@ export function PropertiesPanel() {
   return (
     <aside className="panel panel--properties">
       <div className="panel__eyebrow">Results</div>
+
+      <label className="results-toggle">
+        <span>Diff coloring</span>
+        <input
+          type="checkbox"
+          checked={diffHighlightEnabled}
+          onChange={(event) => setDiffHighlightEnabled(event.target.checked)}
+        />
+      </label>
 
       <div className="diff-summary">
         <div className="diff-summary__item">

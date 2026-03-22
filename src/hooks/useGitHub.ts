@@ -10,7 +10,7 @@ import {
   getStorageKey,
   mergeBranchCommits,
 } from "../lib/github";
-import { buildRepoFileTree, flattenIfcPaths } from "../lib/repoTree";
+import { buildRepoFileTree } from "../lib/repoTree";
 import { useAppStore } from "../store/useAppStore";
 import type { GitBranch, GitCommit, RepoRef } from "../types/git";
 import type { GitRepoTreeEntry } from "../types/repo";
@@ -112,6 +112,27 @@ async function loadIfcFiles(repo: RepoRef, sha: string, token: string) {
     .map((entry) => entry.path);
 }
 
+async function loadRepoWideIfcFiles(repo: RepoRef, branches: GitBranch[], token: string) {
+  const cacheKey = getStorageKey(repo, "ifc-catalog");
+  const cached = getCachedValue<string[]>(cacheKey, 30 * 60 * 1000);
+  if (cached) {
+    return cached;
+  }
+
+  const pathSet = new Set<string>();
+
+  await Promise.all(
+    branches.map(async (branch) => {
+      const branchPaths = await loadIfcFiles(repo, branch.sha, token);
+      branchPaths.forEach((path) => pathSet.add(path));
+    }),
+  );
+
+  const paths = Array.from(pathSet).sort((left, right) => left.localeCompare(right));
+  writeCache(cacheKey, paths);
+  return paths;
+}
+
 async function loadRepoTree(repo: RepoRef, sha: string, token: string) {
   const cacheKey = getStorageKey(repo, `tree:${sha}`);
   const cached = getCachedValue<GitRepoTreeEntry[]>(cacheKey, 30 * 60 * 1000);
@@ -140,6 +161,7 @@ export function useGitHub(): UseGitHubResult {
   const setLoadState = useAppStore((state) => state.setLoadState);
   const repoTreeSha = useAppStore((state) => state.repoTreeSha);
   const selectedFilePath = useAppStore((state) => state.selectedFilePath);
+  const availableIfcPaths = useAppStore((state) => state.availableIfcPaths);
   const setRepoFileTree = useAppStore((state) => state.setRepoFileTree);
 
   const connectRepo = useCallback(async () => {
@@ -160,29 +182,35 @@ export function useGitHub(): UseGitHubResult {
 
       const mergedCommits = mergeBranchCommits(commitsByBranch);
       const defaultBranch = getDefaultBranch(branchList);
-      const activeSha = defaultBranch?.sha ?? mergedCommits[0]?.sha ?? null;
-      const repoTreeEntries = activeSha
-        ? await loadRepoTree(SAMPLE_REPO, activeSha, authToken)
+      const restoredActiveSha =
+        activeSha && mergedCommits.some((commit) => commit.sha === activeSha)
+          ? activeSha
+          : defaultBranch?.sha ?? mergedCommits[0]?.sha ?? null;
+      const repoTreeEntries = restoredActiveSha
+        ? await loadRepoTree(SAMPLE_REPO, restoredActiveSha, authToken)
         : [];
       const { tree, fileMap } = buildRepoFileTree(repoTreeEntries);
-      const availableIfcPaths = flattenIfcPaths(tree);
+      const availableIfcPaths = await loadRepoWideIfcFiles(
+        SAMPLE_REPO,
+        branchList,
+        authToken,
+      );
 
       setRepoContext({
         repo: SAMPLE_REPO,
         branches: branchList,
-        selectedBranch: defaultBranch?.name ?? null,
+        selectedBranch: restoredActiveSha === defaultBranch?.sha ? defaultBranch?.name ?? null : null,
         commits: mergedCommits,
         availableIfcPaths,
-        activeSha,
+        activeSha: restoredActiveSha,
         activePath: availableIfcPaths[0] ?? null,
       });
 
       setRepoFileTree({
-        sha: activeSha,
+        sha: restoredActiveSha,
         tree,
         fileMap,
         availableIfcPaths,
-        selectedFilePath: availableIfcPaths[0] ?? null,
       });
     } catch (caughtError) {
       const message =
@@ -194,7 +222,7 @@ export function useGitHub(): UseGitHubResult {
     } finally {
       setIsConnecting(false);
     }
-  }, [authToken, setLoadState, setRepoContext, setRepoFileTree]);
+  }, [activeSha, authToken, setLoadState, setRepoContext, setRepoFileTree]);
 
   const selectBranch = useCallback(
     async (branchName: string) => {
@@ -230,7 +258,7 @@ export function useGitHub(): UseGitHubResult {
             new Date(right.authoredAt).getTime() - new Date(left.authoredAt).getTime(),
         );
         const nextSha = branch?.sha ?? branchCommits[0]?.sha ?? null;
-        const nextIfcPaths = nextSha ? await loadIfcFiles(repo, nextSha, authToken) : [];
+        const nextIfcPaths = await loadRepoWideIfcFiles(repo, branches, authToken);
         const nextTrackedPath =
           selectedFilePath && nextIfcPaths.includes(selectedFilePath)
             ? selectedFilePath
@@ -292,19 +320,18 @@ export function useGitHub(): UseGitHubResult {
         }
 
         const { tree, fileMap } = buildRepoFileTree(entries);
-        const ifcPaths = flattenIfcPaths(tree);
         const nextSelectedFilePath =
-          selectedFilePath && ifcPaths.includes(selectedFilePath)
+          selectedFilePath && availableIfcPaths.includes(selectedFilePath)
             ? selectedFilePath
             : selectedFilePath
               ? null
-              : ifcPaths[0] ?? null;
+              : availableIfcPaths[0] ?? null;
 
         setRepoFileTree({
           sha: activeShaRef,
           tree,
           fileMap,
-          availableIfcPaths: ifcPaths,
+          availableIfcPaths,
           selectedFilePath: nextSelectedFilePath,
         });
       } catch (caughtError) {
@@ -319,7 +346,16 @@ export function useGitHub(): UseGitHubResult {
     return () => {
       cancelled = true;
     };
-  }, [activeSha, authToken, repo, repoTreeSha, selectedFilePath, setLoadState, setRepoFileTree]);
+  }, [
+    activeSha,
+    authToken,
+    availableIfcPaths,
+    repo,
+    repoTreeSha,
+    selectedFilePath,
+    setLoadState,
+    setRepoFileTree,
+  ]);
 
   return useMemo(
     () => ({
