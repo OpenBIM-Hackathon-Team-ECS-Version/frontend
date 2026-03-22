@@ -4,7 +4,13 @@ import type { IfcDataStore } from "@ifc-lite/parser";
 
 import { SAMPLE_REPO_URL } from "../lib/github";
 import type { GitBranch, GitCommit, RepoRef } from "../types/git";
-import type { IfcDiffResult, SelectedIfcEntity } from "../types/ifc";
+import type {
+  BackendVersion,
+  IfcDiffResult,
+  QueryComponentRecord,
+  QueryExplorerFilters,
+  SelectedIfcEntity,
+} from "../types/ifc";
 import type { RepoFileNode } from "../types/repo";
 
 const LAST_MODEL_PATH_STORAGE_KEY = "ifc-git-viewer:last-model-path";
@@ -34,6 +40,15 @@ interface AppState {
   entityCount: number;
   diffHighlightEnabled: boolean;
   diffResult: IfcDiffResult | null;
+  queryVersions: BackendVersion[];
+  selectedQueryVersion: string | null;
+  queryTypes: string[];
+  queryFilters: QueryExplorerFilters;
+  queryResults: QueryComponentRecord[];
+  queryResultCount: number;
+  queryResultTruncated: boolean;
+  queryLoading: boolean;
+  queryError: string | null;
   selectedExpressId: number | null;
   selectedEntity: SelectedIfcEntity | null;
   currentStore: IfcDataStore | null;
@@ -68,6 +83,22 @@ interface AppState {
   ) => void;
   setDiffHighlightEnabled: (enabled: boolean) => void;
   setDiffResult: (diff: IfcDiffResult | null) => void;
+  setQueryExplorerState: (
+    payload: Partial<
+      Pick<
+        AppState,
+        | "queryVersions"
+        | "selectedQueryVersion"
+        | "queryTypes"
+        | "queryResults"
+        | "queryResultCount"
+        | "queryResultTruncated"
+        | "queryLoading"
+        | "queryError"
+      >
+    >,
+  ) => void;
+  setQueryFilters: (payload: Partial<QueryExplorerFilters>) => void;
   setSelectedExpressId: (expressId: number | null) => void;
   setSelectedEntity: (entity: SelectedIfcEntity | null) => void;
   setCurrentStore: (nextStore: IfcDataStore | null) => void;
@@ -144,6 +175,17 @@ export const useAppStore = create<AppState>((set) => ({
   entityCount: 0,
   diffHighlightEnabled: true,
   diffResult: null,
+  queryVersions: [],
+  selectedQueryVersion: null,
+  queryTypes: [],
+  queryFilters: {
+    type: null,
+  },
+  queryResults: [],
+  queryResultCount: 0,
+  queryResultTruncated: false,
+  queryLoading: false,
+  queryError: null,
   selectedExpressId: null,
   selectedEntity: null,
   currentStore: null,
@@ -259,6 +301,14 @@ export const useAppStore = create<AppState>((set) => ({
   setLoadState: (payload) => set(payload),
   setDiffHighlightEnabled: (enabled) => set({ diffHighlightEnabled: enabled }),
   setDiffResult: (diff) => set({ diffResult: diff }),
+  setQueryExplorerState: (payload) => set(payload),
+  setQueryFilters: (payload) =>
+    set((state) => ({
+      queryFilters: {
+        ...state.queryFilters,
+        ...payload,
+      },
+    })),
   setSelectedExpressId: (expressId) => set({ selectedExpressId: expressId }),
   setSelectedEntity: (entity) =>
     set({
@@ -278,6 +328,10 @@ export const useAppStore = create<AppState>((set) => ({
       loadError: null,
       entityCount: 0,
       diffResult: null,
+      queryResults: [],
+      queryResultCount: 0,
+      queryResultTruncated: false,
+      queryError: null,
       selectedExpressId: null,
       selectedEntity: null,
       currentStore: null,

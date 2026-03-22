@@ -20,6 +20,27 @@ export interface IfcDiffDetail {
   changedFields: string[];
 }
 
+export interface BackendVersion {
+  versionId: string;
+  shortId: string;
+  message: string;
+  timestamp: string;
+  author: string;
+}
+
+export interface QueryComponentRecord {
+  componentGuid: string;
+  componentType?: string;
+  entityGuid?: string;
+  entityType?: string;
+  _model?: string;
+  [key: string]: unknown;
+}
+
+export interface QueryExplorerFilters {
+  type: string | null;
+}
+
 export interface IfcPropertyItem {
   name: string;
   value: string;

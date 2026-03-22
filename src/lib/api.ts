@@ -1,5 +1,10 @@
 import type { GitBranch, GitCommit, RepoRef } from "../types/git";
-import type { IfcDiffDetail, IfcDiffResult } from "../types/ifc";
+import type {
+  BackendVersion,
+  IfcDiffDetail,
+  IfcDiffResult,
+  QueryComponentRecord,
+} from "../types/ifc";
 import type { GitRepoTreeEntry } from "../types/repo";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:5001";
@@ -38,6 +43,11 @@ interface IfcDiffApiResponse {
       changedFields: string[];
     }
   >;
+}
+
+interface VersionsApiResponse {
+  latest: string | null;
+  versions: BackendVersion[];
 }
 
 function buildUrl(path: string, params?: Record<string, string | number | undefined>) {
@@ -266,5 +276,75 @@ export function getGitHubComponentDetails(
       guids: guids.join(","),
     },
     token: githubToken,
+  });
+}
+
+function joinCsv(values?: string[] | null) {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+
+  return values.join(",");
+}
+
+export function getVersions(limit = 20) {
+  return requestJson<VersionsApiResponse>("/api/versions", {
+    params: { limit },
+  });
+}
+
+export function getEntityTypes(models?: string[], version?: string | null) {
+  return requestJson<string[]>("/api/entityTypes", {
+    params: {
+      models: joinCsv(models),
+      version: version ?? undefined,
+    },
+  });
+}
+
+export function getComponentTypes(models?: string[], version?: string | null) {
+  return requestJson<string[]>("/api/componentTypes", {
+    params: {
+      models: joinCsv(models),
+      version: version ?? undefined,
+    },
+  });
+}
+
+export function getComponentGuids(params: {
+  models?: string[];
+  entityGuids?: string[];
+  entityTypes?: string[];
+  componentTypes?: string[];
+  version?: string | null;
+}) {
+  return requestJson<Record<string, string[]>>("/api/componentGuids", {
+    params: {
+      models: joinCsv(params.models),
+      entityGuids: joinCsv(params.entityGuids),
+      entityTypes: joinCsv(params.entityTypes),
+      componentTypes: joinCsv(params.componentTypes),
+      version: params.version ?? undefined,
+    },
+  });
+}
+
+export function getComponents(params: {
+  componentGuids?: string[];
+  models?: string[];
+  entityTypes?: string[];
+  entityGuids?: string[];
+  componentTypes?: string[];
+  version?: string | null;
+}) {
+  return requestJson<Record<string, QueryComponentRecord[]>>("/api/components", {
+    params: {
+      componentGuids: joinCsv(params.componentGuids),
+      models: joinCsv(params.models),
+      entityTypes: joinCsv(params.entityTypes),
+      entityGuids: joinCsv(params.entityGuids),
+      componentTypes: joinCsv(params.componentTypes),
+      version: params.version ?? undefined,
+    },
   });
 }

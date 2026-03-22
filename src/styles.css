@@ -820,6 +820,10 @@ button {
   gap: 12px;
 }
 
+.explorer-detail {
+  margin-top: 14px;
+}
+
 .results-detail__header p {
   margin: 6px 0 0;
   font-size: 0.92rem;
@@ -865,6 +869,37 @@ button {
   background: rgba(255, 255, 255, 0.04);
   color: #dff3ff;
   white-space: pre-wrap;
+}
+
+.explorer-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.explorer-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.explorer-version-meta,
+.explorer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.explorer-version-meta strong {
+  color: #f4fbff;
+}
+
+.explorer-results {
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .commit-card {
