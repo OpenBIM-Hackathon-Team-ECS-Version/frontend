@@ -1,0 +1,294 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import {
+  getBranches,
+  getCommits,
+  getDefaultBranch,
+  getRepoTreeAtSha,
+  SAMPLE_REPO,
+  SAMPLE_REPO_URL,
+  getStorageKey,
+  mergeBranchCommits,
+} from "../lib/github";
+import { buildRepoFileTree, flattenIfcPaths } from "../lib/repoTree";
+import { useAppStore } from "../store/useAppStore";
+import type { GitBranch, GitCommit, RepoRef } from "../types/git";
+import type { GitRepoTreeEntry } from "../types/repo";
+
+interface UseGitHubResult {
+  connectRepo: () => Promise<void>;
+  selectBranch: (branchName: string) => Promise<void>;
+  loadIfcPathsForSha: (sha: string) => Promise<string[]>;
+  isConnecting: boolean;
+  error: string | null;
+}
+
+function readCache<T>(key: string) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache<T>(key: string, value: T) {
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      savedAt: Date.now(),
+      value,
+    }),
+  );
+}
+
+function getCachedValue<T>(key: string, maxAgeMs = 5 * 60 * 1000) {
+  const cached = readCache<{ savedAt: number; value: T }>(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.savedAt > maxAgeMs) {
+    return null;
+  }
+
+  return cached.value;
+}
+
+async function loadBranchList(repo: RepoRef, token: string) {
+  const cacheKey = getStorageKey(repo, "branches");
+  const cached = getCachedValue<GitBranch[]>(cacheKey, 30 * 60 * 1000);
+  if (cached) {
+    return cached;
+  }
+
+  const branches = await getBranches(repo, token);
+  writeCache(cacheKey, branches);
+  return branches;
+}
+
+async function loadBranchCommits(repo: RepoRef, branch: string, token: string) {
+  const cacheKey = getStorageKey(repo, `commits:${branch}`);
+  const cached = getCachedValue<GitCommit[]>(cacheKey, 10 * 60 * 1000);
+  if (cached) {
+    return cached;
+  }
+
+  const commits = await getCommits(repo, branch, token);
+  writeCache(cacheKey, commits);
+  return commits;
+}
+
+async function loadIfcFiles(repo: RepoRef, sha: string, token: string) {
+  const treeEntries = await loadRepoTree(repo, sha, token);
+  return treeEntries
+    .filter((entry) => entry.type === "blob" && entry.path.toLowerCase().endsWith(".ifc"))
+    .map((entry) => entry.path);
+}
+
+async function loadRepoTree(repo: RepoRef, sha: string, token: string) {
+  const cacheKey = getStorageKey(repo, `tree:${sha}`);
+  const cached = getCachedValue<GitRepoTreeEntry[]>(cacheKey, 30 * 60 * 1000);
+  if (cached) {
+    return cached;
+  }
+
+  const treeEntries = await getRepoTreeAtSha(repo, sha, token);
+  writeCache(cacheKey, treeEntries);
+  return treeEntries;
+}
+
+export function useGitHub(): UseGitHubResult {
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const authToken = useAppStore((state) => state.authToken);
+  const repo = useAppStore((state) => state.repo);
+  const branches = useAppStore((state) => state.branches);
+  const commits = useAppStore((state) => state.commits);
+  const activeSha = useAppStore((state) => state.activeSha);
+  const setRepoContext = useAppStore((state) => state.setRepoContext);
+  const setCommits = useAppStore((state) => state.setCommits);
+  const setSelectedBranch = useAppStore((state) => state.setSelectedBranch);
+  const setAvailableIfcPaths = useAppStore((state) => state.setAvailableIfcPaths);
+  const setActiveSha = useAppStore((state) => state.setActiveSha);
+  const setLoadState = useAppStore((state) => state.setLoadState);
+  const repoTreeSha = useAppStore((state) => state.repoTreeSha);
+  const selectedFilePath = useAppStore((state) => state.selectedFilePath);
+  const setRepoFileTree = useAppStore((state) => state.setRepoFileTree);
+
+  const connectRepo = useCallback(async () => {
+    setIsConnecting(true);
+    setError(null);
+
+    try {
+      const branchList = await loadBranchList(SAMPLE_REPO, authToken);
+      const prioritizedBranches = branchList.slice(0, 6);
+      const commitsByBranch = Object.fromEntries(
+        await Promise.all(
+          prioritizedBranches.map(async (branch) => [
+            branch.name,
+            await loadBranchCommits(SAMPLE_REPO, branch.name, authToken),
+          ]),
+        ),
+      );
+
+      const mergedCommits = mergeBranchCommits(commitsByBranch);
+      const defaultBranch = getDefaultBranch(branchList);
+      const activeSha = defaultBranch?.sha ?? mergedCommits[0]?.sha ?? null;
+      const repoTreeEntries = activeSha
+        ? await loadRepoTree(SAMPLE_REPO, activeSha, authToken)
+        : [];
+      const { tree, fileMap } = buildRepoFileTree(repoTreeEntries);
+      const availableIfcPaths = flattenIfcPaths(tree);
+
+      setRepoContext({
+        repo: SAMPLE_REPO,
+        branches: branchList,
+        selectedBranch: defaultBranch?.name ?? null,
+        commits: mergedCommits,
+        availableIfcPaths,
+        activeSha,
+        activePath: availableIfcPaths[0] ?? null,
+      });
+
+      setRepoFileTree({
+        sha: activeSha,
+        tree,
+        fileMap,
+        availableIfcPaths,
+        selectedFilePath: availableIfcPaths[0] ?? null,
+      });
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : `Unable to connect to ${SAMPLE_REPO_URL}.`;
+      setError(message);
+      setLoadState({ loadError: message });
+    } finally {
+      setIsConnecting(false);
+    }
+  }, [authToken, setLoadState, setRepoContext, setRepoFileTree]);
+
+  const selectBranch = useCallback(
+    async (branchName: string) => {
+      if (!repo) {
+        return;
+      }
+
+      setError(null);
+      setSelectedBranch(branchName);
+
+      try {
+        const branch = branches.find((entry) => entry.name === branchName) ?? null;
+        const branchCommits = await loadBranchCommits(repo, branchName, authToken);
+        const mergedMap = new Map(commits.map((entry) => [entry.sha, entry] as const));
+
+        branchCommits.forEach((commit) => {
+          const existing = mergedMap.get(commit.sha);
+          if (existing) {
+            mergedMap.set(commit.sha, {
+              ...existing,
+              branchNames: Array.from(
+                new Set([...existing.branchNames, ...commit.branchNames, branchName]),
+              ),
+            });
+            return;
+          }
+
+          mergedMap.set(commit.sha, commit);
+        });
+
+        const mergedCommits = Array.from(mergedMap.values()).sort(
+          (left, right) =>
+            new Date(right.authoredAt).getTime() - new Date(left.authoredAt).getTime(),
+        );
+        const nextSha = branch?.sha ?? branchCommits[0]?.sha ?? null;
+        const nextIfcPaths = nextSha ? await loadIfcFiles(repo, nextSha, authToken) : [];
+
+        setCommits(mergedCommits);
+        setAvailableIfcPaths(nextIfcPaths, nextIfcPaths[0] ?? null);
+        setActiveSha(nextSha);
+      } catch (caughtError) {
+        const message =
+          caughtError instanceof Error ? caughtError.message : "Unable to switch branches.";
+        setError(message);
+      }
+    },
+    [authToken, branches, commits, repo, setActiveSha, setAvailableIfcPaths, setCommits, setSelectedBranch],
+  );
+
+  const loadIfcPathsForSha = useCallback(
+    async (sha: string) => {
+      if (!repo) {
+        return [];
+      }
+
+      return loadIfcFiles(repo, sha, authToken);
+    },
+    [authToken, repo],
+  );
+
+  useEffect(() => {
+    if (!repo || !activeSha) {
+      return;
+    }
+
+    const repoRef = repo;
+    const activeShaRef = activeSha;
+    if (repoTreeSha === activeShaRef) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function syncRepoTree() {
+      try {
+        const entries = await loadRepoTree(repoRef, activeShaRef, authToken);
+        if (cancelled) {
+          return;
+        }
+
+        const { tree, fileMap } = buildRepoFileTree(entries);
+        const ifcPaths = flattenIfcPaths(tree);
+        const nextSelectedFilePath =
+          selectedFilePath && ifcPaths.includes(selectedFilePath)
+            ? selectedFilePath
+            : ifcPaths[0] ?? null;
+
+        setRepoFileTree({
+          sha: activeShaRef,
+          tree,
+          fileMap,
+          availableIfcPaths: ifcPaths,
+          selectedFilePath: nextSelectedFilePath,
+        });
+      } catch (caughtError) {
+        const message =
+          caughtError instanceof Error ? caughtError.message : "Unable to load repository files.";
+        setLoadState({ loadError: message });
+      }
+    }
+
+    void syncRepoTree();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSha, authToken, repo, repoTreeSha, selectedFilePath, setLoadState, setRepoFileTree]);
+
+  return useMemo(
+    () => ({
+      connectRepo,
+      selectBranch,
+      loadIfcPathsForSha,
+      isConnecting,
+      error,
+    }),
+    [connectRepo, error, isConnecting, loadIfcPathsForSha, selectBranch],
+  );
+}
