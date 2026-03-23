@@ -12,7 +12,7 @@ import {
 } from "../lib/github";
 import { buildRepoFileTree } from "../lib/repoTree";
 import { useAppStore } from "../store/useAppStore";
-import type { GitBranch, GitCommit, RepoRef } from "../types/git";
+import type { GitBranch, GitCommit, RepoArtifactFile, RepoRef } from "../types/git";
 import type { GitRepoTreeEntry } from "../types/repo";
 
 interface UseGitHubResult {
@@ -133,6 +133,46 @@ async function loadRepoWideIfcFiles(repo: RepoRef, branches: GitBranch[], token:
   return paths;
 }
 
+async function loadRepoWideBcfFiles(repo: RepoRef, branches: GitBranch[], token: string) {
+  const cacheKey = getStorageKey(repo, "bcf-catalog:v2");
+  const cached = getCachedValue<RepoArtifactFile[]>(cacheKey, 5 * 60 * 1000);
+  if (cached) {
+    return cached;
+  }
+
+  const files = new Map<string, RepoArtifactFile>();
+
+  await Promise.all(
+    branches.map(async (branch) => {
+      const treeEntries = await loadRepoTree(repo, branch.sha, token);
+
+      treeEntries
+        .filter(
+          (entry) =>
+            entry.type === "blob" &&
+            (entry.path.toLowerCase().endsWith(".bcfzip") || entry.path.toLowerCase().endsWith(".bcf")),
+        )
+        .forEach((entry) => {
+          const existing = files.get(entry.path);
+          if (existing) {
+            return;
+          }
+
+          files.set(entry.path, {
+            path: entry.path,
+            sha: branch.sha,
+            branch: branch.name,
+            size: entry.size,
+          });
+        });
+    }),
+  );
+
+  const results = Array.from(files.values()).sort((left, right) => right.path.localeCompare(left.path));
+  writeCache(cacheKey, results);
+  return results;
+}
+
 async function loadRepoTree(repo: RepoRef, sha: string, token: string) {
   const cacheKey = getStorageKey(repo, `tree:${sha}`);
   const cached = getCachedValue<GitRepoTreeEntry[]>(cacheKey, 30 * 60 * 1000);
@@ -159,6 +199,7 @@ export function useGitHub(): UseGitHubResult {
   const setAvailableIfcPaths = useAppStore((state) => state.setAvailableIfcPaths);
   const setActiveSha = useAppStore((state) => state.setActiveSha);
   const setLoadState = useAppStore((state) => state.setLoadState);
+  const setAvailableBcfFiles = useAppStore((state) => state.setAvailableBcfFiles);
   const repoTreeSha = useAppStore((state) => state.repoTreeSha);
   const selectedFilePath = useAppStore((state) => state.selectedFilePath);
   const availableIfcPaths = useAppStore((state) => state.availableIfcPaths);
@@ -190,11 +231,10 @@ export function useGitHub(): UseGitHubResult {
         ? await loadRepoTree(SAMPLE_REPO, restoredActiveSha, authToken)
         : [];
       const { tree, fileMap } = buildRepoFileTree(repoTreeEntries);
-      const availableIfcPaths = await loadRepoWideIfcFiles(
-        SAMPLE_REPO,
-        branchList,
-        authToken,
-      );
+      const [availableIfcPaths, availableBcfFiles] = await Promise.all([
+        loadRepoWideIfcFiles(SAMPLE_REPO, branchList, authToken),
+        loadRepoWideBcfFiles(SAMPLE_REPO, branchList, authToken),
+      ]);
 
       setRepoContext({
         repo: SAMPLE_REPO,
@@ -202,6 +242,7 @@ export function useGitHub(): UseGitHubResult {
         selectedBranch: restoredActiveSha === defaultBranch?.sha ? defaultBranch?.name ?? null : null,
         commits: mergedCommits,
         availableIfcPaths,
+        availableBcfFiles,
         activeSha: restoredActiveSha,
         activePath: availableIfcPaths[0] ?? null,
       });
@@ -258,7 +299,10 @@ export function useGitHub(): UseGitHubResult {
             new Date(right.authoredAt).getTime() - new Date(left.authoredAt).getTime(),
         );
         const nextSha = branch?.sha ?? branchCommits[0]?.sha ?? null;
-        const nextIfcPaths = await loadRepoWideIfcFiles(repo, branches, authToken);
+        const [nextIfcPaths, nextBcfFiles] = await Promise.all([
+          loadRepoWideIfcFiles(repo, branches, authToken),
+          loadRepoWideBcfFiles(repo, branches, authToken),
+        ]);
         const nextTrackedPath =
           selectedFilePath && nextIfcPaths.includes(selectedFilePath)
             ? selectedFilePath
@@ -268,6 +312,7 @@ export function useGitHub(): UseGitHubResult {
 
         setCommits(mergedCommits);
         setAvailableIfcPaths(nextIfcPaths, nextTrackedPath);
+        setAvailableBcfFiles(nextBcfFiles);
         setActiveSha(nextSha);
       } catch (caughtError) {
         const message =
@@ -283,6 +328,7 @@ export function useGitHub(): UseGitHubResult {
       selectedFilePath,
       setActiveSha,
       setAvailableIfcPaths,
+      setAvailableBcfFiles,
       setCommits,
       setSelectedBranch,
     ],

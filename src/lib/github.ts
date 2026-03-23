@@ -9,10 +9,10 @@ import {
 } from "./api";
 
 export const SAMPLE_REPO_URL =
-  "https://github.com/OpenBIM-Hackathon-Team-ECS-Version/Sample-IFC-Files";
+  "https://github.com/OpenBIM-Hackathon-Team-ECS-Version/File-Storage";
 export const SAMPLE_REPO: RepoRef = {
   owner: "OpenBIM-Hackathon-Team-ECS-Version",
-  name: "Sample-IFC-Files",
+  name: "File-Storage",
 };
 
 const requestCache = new Map<string, { savedAt: number; value: unknown }>();
@@ -139,6 +139,15 @@ export async function getRepoTreeAtSha(repo: RepoRef, sha: string, token?: strin
 }
 
 export async function fetchIfcBuffer(
+  repo: RepoRef,
+  sha: string,
+  path: string,
+  token?: string,
+) {
+  return getGitHubFileBuffer(repo, sha, path, token);
+}
+
+export async function fetchRepoFileBuffer(
   repo: RepoRef,
   sha: string,
   path: string,

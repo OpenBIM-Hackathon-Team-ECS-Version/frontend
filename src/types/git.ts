@@ -29,6 +29,13 @@ export interface GitFileEntry {
   size?: number;
 }
 
+export interface RepoArtifactFile {
+  path: string;
+  sha: string;
+  branch: string;
+  size?: number;
+}
+
 export interface GitGraphNodeData extends Record<string, unknown> {
   sha: string;
   message: string;

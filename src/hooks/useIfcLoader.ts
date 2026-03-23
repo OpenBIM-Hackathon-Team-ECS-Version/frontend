@@ -4,7 +4,11 @@ import { fetchIfcBuffer } from "../lib/github";
 import { useAppStore } from "../store/useAppStore";
 
 export function useIfcLoader(
-  loadIfc: (buffer: ArrayBuffer, requestKey: string) => Promise<unknown>,
+  loadIfc: (
+    buffer: ArrayBuffer,
+    requestKey: string,
+    options?: { restoreCamera?: ReturnType<typeof useAppStore.getState>["viewerCamera"] },
+  ) => Promise<unknown>,
   loadIfcPathsForSha: (sha: string) => Promise<string[]>,
 ) {
   const repo = useAppStore((state) => state.repo);
@@ -61,13 +65,15 @@ export function useIfcLoader(
           return;
         }
         lastRequestKeyRef.current = requestKey;
+        const restoreCamera =
+          resolvedPath === trackedPath ? useAppStore.getState().viewerCamera : null;
 
         const buffer = await fetchIfcBuffer(repoRef, sha, resolvedPath, authToken);
         if (cancelled) {
           return;
         }
 
-        await loadIfc(buffer, requestKey);
+        await loadIfc(buffer, requestKey, { restoreCamera });
       } catch (caughtError) {
         const message =
           caughtError instanceof Error ? caughtError.message : "Failed to fetch the IFC file.";
