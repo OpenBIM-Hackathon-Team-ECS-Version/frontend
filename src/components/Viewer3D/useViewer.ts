@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type MouseEvent,
+  type PointerEvent,
+  type WheelEvent,
+} from "react";
 
 import {
   extractAllEntityAttributes,
@@ -96,6 +104,21 @@ export function useViewer() {
   const geometryRef = useRef<GeometryProcessor | null>(null);
   const rendererRef = useRef<Renderer | null>(null);
   const latestLoadRequestRef = useRef<string | null>(null);
+  const suppressClickRef = useRef(false);
+  const wheelInteractionTimeoutRef = useRef<number | null>(null);
+  const interactionRef = useRef<{
+    pointerId: number | null;
+    mode: "orbit" | "pan" | null;
+    lastX: number;
+    lastY: number;
+    moved: boolean;
+  }>({
+    pointerId: null,
+    mode: null,
+    lastX: 0,
+    lastY: 0,
+    moved: false,
+  });
 
   const currentStore = useAppStore((state) => state.currentStore);
   const selectedExpressId = useAppStore((state) => state.selectedExpressId);
@@ -106,7 +129,10 @@ export function useViewer() {
   const setSelectedExpressId = useAppStore((state) => state.setSelectedExpressId);
 
   const renderScene = useCallback(
-    (selection: number | null = useAppStore.getState().selectedExpressId) => {
+    (
+      selection: number | null = useAppStore.getState().selectedExpressId,
+      options?: { isInteracting?: boolean },
+    ) => {
       const renderer = rendererRef.current;
       if (!renderer?.isReady()) {
         return;
@@ -114,6 +140,7 @@ export function useViewer() {
 
       renderer.render({
         clearColor: CLEAR_COLOR,
+        isInteracting: options?.isInteracting,
         selectedId: selection,
       });
     },
@@ -206,6 +233,9 @@ export function useViewer() {
     return () => {
       cancelled = true;
       resizeObserver?.disconnect();
+      if (wheelInteractionTimeoutRef.current !== null) {
+        window.clearTimeout(wheelInteractionTimeoutRef.current);
+      }
       rendererRef.current?.destroy();
       geometryRef.current?.dispose();
       rendererRef.current = null;
@@ -252,6 +282,7 @@ export function useViewer() {
 
         renderer.getScene().clear();
         renderer.clearCaches();
+        renderer.getCamera().reset();
         resizeRenderer();
         renderer.loadGeometry(geometryResult);
         renderer.fitToView();
@@ -305,12 +336,14 @@ export function useViewer() {
       }
 
       const overrides = new Map<number, [number, number, number, number]>();
+      const changedIds =
+        diff.changed.size > 0 ? diff.changed : new Set(Object.keys(diff.changesById ?? {}));
 
       mapGuidsToExpressIds(currentStore, diff.added).forEach((expressId) => {
         overrides.set(expressId, DIFF_COLORS.added);
       });
 
-      mapGuidsToExpressIds(currentStore, diff.changed).forEach((expressId) => {
+      mapGuidsToExpressIds(currentStore, changedIds).forEach((expressId) => {
         overrides.set(expressId, DIFF_COLORS.changed);
       });
 
@@ -327,6 +360,11 @@ export function useViewer() {
 
   const handleCanvasClick = useCallback(
     async (event: MouseEvent<HTMLCanvasElement>) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+
       const renderer = rendererRef.current;
       if (!renderer || !currentStore) {
         return;
@@ -350,18 +388,163 @@ export function useViewer() {
       }
 
       setSelectedEntity(entity);
+      setSelectedExpressId(entity.expressId);
       renderScene(entity.expressId);
     },
     [currentStore, renderScene, setSelectedEntity, setSelectedExpressId],
   );
 
+  const finishInteraction = useCallback(() => {
+    interactionRef.current.pointerId = null;
+    interactionRef.current.mode = null;
+    interactionRef.current.lastX = 0;
+    interactionRef.current.lastY = 0;
+    interactionRef.current.moved = false;
+    renderScene();
+  }, [renderScene]);
+
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    if (interactionRef.current.pointerId !== null) {
+      return;
+    }
+
+    const mode =
+      event.button === 1 || event.button === 2 || event.ctrlKey || event.metaKey ? "pan" : "orbit";
+
+    interactionRef.current.pointerId = event.pointerId;
+    interactionRef.current.mode = mode;
+    interactionRef.current.lastX = event.clientX;
+    interactionRef.current.lastY = event.clientY;
+    interactionRef.current.moved = false;
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      const renderer = rendererRef.current;
+      const interaction = interactionRef.current;
+      if (!renderer || interaction.pointerId !== event.pointerId || interaction.mode === null) {
+        return;
+      }
+
+      const deltaX = event.clientX - interaction.lastX;
+      const deltaY = event.clientY - interaction.lastY;
+      if (deltaX === 0 && deltaY === 0) {
+        return;
+      }
+
+      interaction.lastX = event.clientX;
+      interaction.lastY = event.clientY;
+
+      if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+        interaction.moved = true;
+      }
+
+      const camera = renderer.getCamera();
+      if (interaction.mode === "orbit") {
+        camera.orbit(deltaX, deltaY);
+      } else {
+        camera.pan(deltaX, deltaY);
+      }
+
+      renderScene(undefined, { isInteracting: true });
+      event.preventDefault();
+    },
+    [renderScene],
+  );
+
+  const handlePointerUp = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      if (interactionRef.current.pointerId !== event.pointerId) {
+        return;
+      }
+
+      suppressClickRef.current = interactionRef.current.moved;
+
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      finishInteraction();
+      event.preventDefault();
+    },
+    [finishInteraction],
+  );
+
+  const handlePointerCancel = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      if (interactionRef.current.pointerId !== event.pointerId) {
+        return;
+      }
+
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      finishInteraction();
+    },
+    [finishInteraction],
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent<HTMLCanvasElement>) => {
+      const renderer = rendererRef.current;
+      if (!renderer) {
+        return;
+      }
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+
+      renderer.getCamera().zoom(event.deltaY, false, x, y, rect.width, rect.height);
+      renderScene(undefined, { isInteracting: true });
+
+      if (wheelInteractionTimeoutRef.current !== null) {
+        window.clearTimeout(wheelInteractionTimeoutRef.current);
+      }
+
+      wheelInteractionTimeoutRef.current = window.setTimeout(() => {
+        renderScene();
+        wheelInteractionTimeoutRef.current = null;
+      }, 120);
+
+      event.preventDefault();
+    },
+    [renderScene],
+  );
+
+  const handleContextMenu = useCallback((event: MouseEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+  }, []);
+
   return useMemo(
     () => ({
+      canvasHandlers: {
+        onContextMenu: handleContextMenu,
+        onPointerCancel: handlePointerCancel,
+        onPointerDown: handlePointerDown,
+        onPointerMove: handlePointerMove,
+        onPointerUp: handlePointerUp,
+        onWheel: handleWheel,
+      },
       canvasRef,
       loadIfc,
       applyDiff,
       handleCanvasClick,
     }),
-    [applyDiff, handleCanvasClick, loadIfc],
+    [
+      applyDiff,
+      handleCanvasClick,
+      handleContextMenu,
+      handlePointerCancel,
+      handlePointerDown,
+      handlePointerMove,
+      handlePointerUp,
+      handleWheel,
+      loadIfc,
+    ],
   );
 }

@@ -1,7 +1,12 @@
-import { Octokit } from "@octokit/rest";
-
 import type { GitBranch, GitCommit, GitFileEntry, RepoRef } from "../types/git";
 import type { GitRepoTreeEntry } from "../types/repo";
+import {
+  getGitHubBranches,
+  getGitHubCommits,
+  getGitHubFileBuffer,
+  getGitHubFileHistory,
+  getGitHubRepoTree,
+} from "./api";
 
 export const SAMPLE_REPO_URL =
   "https://github.com/OpenBIM-Hackathon-Team-ECS-Version/Sample-IFC-Files";
@@ -13,12 +18,6 @@ export const SAMPLE_REPO: RepoRef = {
 const requestCache = new Map<string, { savedAt: number; value: unknown }>();
 const inFlightRequests = new Map<string, Promise<unknown>>();
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
-
-function createOctokit(token?: string) {
-  return new Octokit({
-    auth: token?.trim() ? token.trim() : undefined,
-  });
-}
 
 function getCachedRequest<T>(key: string, maxAgeMs = DEFAULT_CACHE_TTL_MS) {
   const cached = requestCache.get(key);
@@ -65,69 +64,6 @@ async function getOrCreateRequest<T>(key: string, load: () => Promise<T>) {
   return (await promise) as T;
 }
 
-const relativeFormatter = new Intl.RelativeTimeFormat("en", {
-  numeric: "auto",
-});
-
-function formatRelativeTime(isoDate: string) {
-  const diffMs = new Date(isoDate).getTime() - Date.now();
-  const diffMinutes = Math.round(diffMs / 60000);
-
-  if (Math.abs(diffMinutes) < 60) {
-    return relativeFormatter.format(diffMinutes, "minute");
-  }
-
-  const diffHours = Math.round(diffMinutes / 60);
-  if (Math.abs(diffHours) < 24) {
-    return relativeFormatter.format(diffHours, "hour");
-  }
-
-  const diffDays = Math.round(diffHours / 24);
-  if (Math.abs(diffDays) < 30) {
-    return relativeFormatter.format(diffDays, "day");
-  }
-
-  const diffMonths = Math.round(diffDays / 30);
-  if (Math.abs(diffMonths) < 12) {
-    return relativeFormatter.format(diffMonths, "month");
-  }
-
-  const diffYears = Math.round(diffMonths / 12);
-  return relativeFormatter.format(diffYears, "year");
-}
-
-function normalizeBranchName(name: string) {
-  return name.trim();
-}
-
-function toShortSha(sha: string) {
-  return sha.slice(0, 7);
-}
-
-function toGitCommit(
-  commit: Awaited<ReturnType<Octokit["repos"]["listCommits"]>>["data"][number],
-  branchName: string,
-): GitCommit {
-  const authoredAt =
-    commit.commit.author?.date ?? commit.commit.committer?.date ?? new Date().toISOString();
-
-  return {
-    sha: commit.sha,
-    shortSha: toShortSha(commit.sha),
-    message: commit.commit.message,
-    authoredAt,
-    relativeTime: formatRelativeTime(authoredAt),
-    authorName:
-      commit.commit.author?.name ??
-      commit.author?.login ??
-      commit.commit.committer?.name ??
-      "Unknown author",
-    authorAvatarUrl: commit.author?.avatar_url ?? null,
-    parentShas: commit.parents.map((parent) => parent.sha),
-    branchNames: [branchName],
-  };
-}
-
 export function parseRepoInput(input: string): RepoRef | null {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -157,18 +93,7 @@ export function parseRepoInput(input: string): RepoRef | null {
 }
 
 export async function getBranches(repo: RepoRef, token?: string) {
-  const octokit = createOctokit(token);
-  const { data } = await octokit.repos.listBranches({
-    owner: repo.owner,
-    repo: repo.name,
-    per_page: 20,
-  });
-
-  return data.map<GitBranch>((branch) => ({
-    name: normalizeBranchName(branch.name),
-    sha: branch.commit.sha,
-    protected: branch.protected,
-  }));
+  return getGitHubBranches(repo, token, 20);
 }
 
 export async function getCommits(
@@ -177,15 +102,7 @@ export async function getCommits(
   token?: string,
   perPage = 35,
 ) {
-  const octokit = createOctokit(token);
-  const { data } = await octokit.repos.listCommits({
-    owner: repo.owner,
-    repo: repo.name,
-    sha: branch,
-    per_page: perPage,
-  });
-
-  return data.map((commit) => toGitCommit(commit, branch));
+  return getGitHubCommits(repo, branch, token, perPage);
 }
 
 export async function getFileCommitHistory(
@@ -199,16 +116,7 @@ export async function getFileCommitHistory(
   const effectivePerPage = Math.max(perPage, 20);
   const cacheKey = `${repo.owner}/${repo.name}:file-history:${ref}:${normalizedPath}`;
   const commits = await getOrCreateRequest(cacheKey, async () => {
-    const octokit = createOctokit(token);
-    const { data } = await octokit.repos.listCommits({
-      owner: repo.owner,
-      repo: repo.name,
-      sha: ref,
-      path: normalizedPath,
-      per_page: effectivePerPage,
-    });
-
-    return data.map((commit) => toGitCommit(commit, ref));
+    return getGitHubFileHistory(repo, ref, normalizedPath, token, effectivePerPage);
   });
 
   return commits.slice(0, perPage);
@@ -227,38 +135,7 @@ export async function findIfcFiles(repo: RepoRef, sha: string, token?: string) {
 }
 
 export async function getRepoTreeAtSha(repo: RepoRef, sha: string, token?: string) {
-  const octokit = createOctokit(token);
-  const { data } = await octokit.git.getTree({
-    owner: repo.owner,
-    repo: repo.name,
-    tree_sha: sha,
-    recursive: "true",
-  });
-
-  return data.tree
-    .filter(
-      (entry): entry is typeof entry & { path: string; sha: string } =>
-        (entry.type === "blob" || entry.type === "tree") &&
-        typeof entry.path === "string" &&
-        typeof entry.sha === "string",
-    )
-    .map<GitRepoTreeEntry>((entry) => ({
-      path: entry.path,
-      sha: entry.sha,
-      type: entry.type as "blob" | "tree",
-      size: entry.size,
-    }));
-}
-
-function decodeBase64ToArrayBuffer(content: string) {
-  const binary = atob(content.replace(/\n/g, ""));
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes.buffer;
+  return getGitHubRepoTree(repo, sha, token);
 }
 
 export async function fetchIfcBuffer(
@@ -267,40 +144,7 @@ export async function fetchIfcBuffer(
   path: string,
   token?: string,
 ) {
-  const rawUrl = `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/${sha}/${path}`;
-
-  try {
-    const rawResponse = await fetch(rawUrl);
-    if (rawResponse.ok) {
-      return rawResponse.arrayBuffer();
-    }
-  } catch {
-    // Fall back to the GitHub API below when raw fetch fails.
-  }
-
-  if (token?.trim()) {
-    const octokit = createOctokit(token);
-    const { data } = await octokit.repos.getContent({
-      owner: repo.owner,
-      repo: repo.name,
-      path,
-      ref: sha,
-      headers: {
-        accept: "application/vnd.github.raw+json",
-      },
-    });
-
-    if (typeof data === "object" && "content" in data && typeof data.content === "string") {
-      return decodeBase64ToArrayBuffer(data.content);
-    }
-  }
-
-  const response = await fetch(rawUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch IFC file (${response.status})`);
-  }
-
-  return response.arrayBuffer();
+  return getGitHubFileBuffer(repo, sha, path, token);
 }
 
 export function mergeBranchCommits(branchCommits: Record<string, GitCommit[]>) {

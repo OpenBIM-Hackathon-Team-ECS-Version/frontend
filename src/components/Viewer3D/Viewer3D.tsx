@@ -16,7 +16,7 @@ export function Viewer3D({ loadIfcPathsForSha }: Viewer3DProps) {
   const entityCount = useAppStore((state) => state.entityCount);
   const activePath = useAppStore((state) => state.activePath);
 
-  const { canvasRef, loadIfc, applyDiff, handleCanvasClick } = useViewer();
+  const { canvasHandlers, canvasRef, loadIfc, applyDiff, handleCanvasClick } = useViewer();
 
   useIfcLoader(loadIfc, loadIfcPathsForSha);
   useIfcDiff(applyDiff, viewerReady);
@@ -45,6 +45,7 @@ export function Viewer3D({ loadIfcPathsForSha }: Viewer3DProps) {
             ref={canvasRef}
             className="viewer__canvas"
             onClick={(event) => void handleCanvasClick(event)}
+            {...canvasHandlers}
           />
 
           {loading ? (

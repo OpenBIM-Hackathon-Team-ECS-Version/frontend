@@ -18,6 +18,7 @@ export function buildGitGraph(
   commits: GitCommit[],
   branches: GitBranch[],
   activeSha: string | null,
+  relevantShas?: Set<string>,
 ) {
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
@@ -67,6 +68,7 @@ export function buildGitGraph(
         relativeTime: commit.relativeTime,
         branchNames: commit.branchNames,
         isHead: activeSha === commit.sha,
+        isRelevant: relevantShas ? relevantShas.has(commit.sha) : true,
       },
       draggable: false,
       selectable: true,

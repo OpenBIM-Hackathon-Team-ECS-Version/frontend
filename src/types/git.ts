@@ -36,6 +36,7 @@ export interface GitGraphNodeData extends Record<string, unknown> {
   relativeTime: string;
   branchNames: string[];
   isHead: boolean;
+  isRelevant: boolean;
 }
 
 export interface BranchNodeData extends Record<string, unknown> {

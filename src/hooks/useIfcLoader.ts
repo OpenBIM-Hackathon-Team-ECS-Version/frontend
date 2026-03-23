@@ -11,8 +11,8 @@ export function useIfcLoader(
   const authToken = useAppStore((state) => state.authToken);
   const activeSha = useAppStore((state) => state.activeSha);
   const activePath = useAppStore((state) => state.activePath);
-  const setAvailableIfcPaths = useAppStore((state) => state.setAvailableIfcPaths);
   const setLoadState = useAppStore((state) => state.setLoadState);
+  const setSelectedFilePath = useAppStore((state) => state.setSelectedFilePath);
 
   const lastRequestKeyRef = useRef<string | null>(null);
 
@@ -37,10 +37,8 @@ export function useIfcLoader(
           trackedPath && availablePaths.includes(trackedPath)
             ? trackedPath
             : trackedPath
-              ? null
+              ? availablePaths[0] ?? null
               : availablePaths[0] ?? null;
-
-        setAvailableIfcPaths(availablePaths, resolvedPath);
 
         if (!resolvedPath) {
           setLoadState({
@@ -52,6 +50,10 @@ export function useIfcLoader(
           });
           lastRequestKeyRef.current = null;
           return;
+        }
+
+        if (resolvedPath !== trackedPath) {
+          setSelectedFilePath(resolvedPath);
         }
 
         const requestKey = `${repoRef.owner}/${repoRef.name}:${sha}:${resolvedPath}`;
@@ -89,7 +91,7 @@ export function useIfcLoader(
     loadIfc,
     loadIfcPathsForSha,
     repo,
-    setAvailableIfcPaths,
+    setSelectedFilePath,
     setLoadState,
   ]);
 }

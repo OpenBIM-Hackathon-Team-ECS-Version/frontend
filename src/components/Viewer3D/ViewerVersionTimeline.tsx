@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
-import { getFileCommitHistory } from "../../lib/github";
+import { getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
 
@@ -9,34 +9,50 @@ export function ViewerVersionTimeline() {
   const authToken = useAppStore((state) => state.authToken);
   const activePath = useAppStore((state) => state.activePath);
   const activeSha = useAppStore((state) => state.activeSha);
+  const branches = useAppStore((state) => state.branches);
   const selectedBranch = useAppStore((state) => state.selectedBranch);
-  const commitMap = useAppStore((state) => state.commitMap);
   const setActiveSha = useAppStore((state) => state.setActiveSha);
 
   const [versions, setVersions] = useState<GitCommit[]>([]);
   const [loading, setLoading] = useState(false);
   const [visibleVersionSha, setVisibleVersionSha] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(6);
 
   useEffect(() => {
-    const historyRef = selectedBranch ?? activeSha;
-    if (!repo || !activePath || !historyRef) {
+    if (!repo || !activePath) {
       setVersions([]);
       setLoading(false);
       setVisibleVersionSha(null);
+      setPage(0);
       return;
     }
 
     let cancelled = false;
     const resolvedRepo = repo;
     const resolvedActivePath = activePath;
-    const resolvedHistoryRef = historyRef;
+    const prioritizedBranches =
+      selectedBranch
+        ? branches.filter((branch) => branch.name === selectedBranch)
+        : branches.slice(0, 6);
 
     async function loadVersions() {
       setLoading(true);
 
       try {
-        const [history, visibleHistory] = await Promise.all([
-          getFileCommitHistory(resolvedRepo, resolvedHistoryRef, resolvedActivePath, authToken, 20),
+        const [historyByBranch, visibleHistory] = await Promise.all([
+          Promise.all(
+            prioritizedBranches.map(async (branch) => [
+              branch.name,
+              await getFileCommitHistory(
+                resolvedRepo,
+                branch.name,
+                resolvedActivePath,
+                authToken,
+                20,
+              ),
+            ] as const),
+          ),
           activeSha
             ? getFileCommitHistory(resolvedRepo, activeSha, resolvedActivePath, authToken, 1)
             : Promise.resolve([]),
@@ -45,7 +61,8 @@ export function ViewerVersionTimeline() {
           return;
         }
 
-        setVersions(history.slice().reverse());
+        const mergedHistory = mergeBranchCommits(Object.fromEntries(historyByBranch));
+        setVersions(mergedHistory.slice().reverse());
         setVisibleVersionSha(visibleHistory[0]?.sha ?? null);
       } catch (error) {
         if (cancelled) {
@@ -67,12 +84,38 @@ export function ViewerVersionTimeline() {
     return () => {
       cancelled = true;
     };
-  }, [activePath, activeSha, authToken, repo, selectedBranch]);
+  }, [activePath, activeSha, authToken, branches, repo, selectedBranch]);
 
-  const activeBranchCommit = useMemo(
-    () => (activeSha ? commitMap.get(activeSha) ?? null : null),
-    [activeSha, commitMap],
-  );
+  useEffect(() => {
+    function updatePageSize() {
+      if (window.innerWidth >= 1800) {
+        setPageSize(7);
+        return;
+      }
+
+      if (window.innerWidth >= 1440) {
+        setPageSize(6);
+        return;
+      }
+
+      if (window.innerWidth >= 1100) {
+        setPageSize(5);
+        return;
+      }
+
+      if (window.innerWidth >= 860) {
+        setPageSize(4);
+        return;
+      }
+
+      setPageSize(2);
+    }
+
+    updatePageSize();
+    window.addEventListener("resize", updatePageSize);
+    return () => window.removeEventListener("resize", updatePageSize);
+  }, []);
+
   const activeVersionCommit = useMemo(
     () => versions.find((commit) => commit.sha === visibleVersionSha) ?? null,
     [versions, visibleVersionSha],
@@ -81,6 +124,30 @@ export function ViewerVersionTimeline() {
     () => versions.find((commit) => commit.sha === activeSha) ?? null,
     [activeSha, versions],
   );
+  const totalPages = Math.max(Math.ceil(versions.length / pageSize), 1);
+  const clampedPage = Math.min(page, totalPages - 1);
+  const visibleVersions = useMemo(() => {
+    const start = clampedPage * pageSize;
+    return versions.slice(start, start + pageSize);
+  }, [clampedPage, pageSize, versions]);
+
+  useEffect(() => {
+    setPage((currentPage) => Math.min(currentPage, totalPages - 1));
+  }, [totalPages]);
+
+  useEffect(() => {
+    if (!visibleVersionSha) {
+      return;
+    }
+
+    const activeIndex = versions.findIndex((commit) => commit.sha === visibleVersionSha);
+    if (activeIndex < 0) {
+      return;
+    }
+
+    const nextPage = Math.floor(activeIndex / pageSize);
+    setPage((currentPage) => (currentPage === nextPage ? currentPage : nextPage));
+  }, [pageSize, versions, visibleVersionSha]);
 
   return (
     <div className="version-strip">
@@ -101,62 +168,66 @@ export function ViewerVersionTimeline() {
         </div>
       </div>
 
-      <div className="version-strip__summary">
-        <div className="version-strip__summary-card">
-          <span>Branch commit</span>
-          <strong>{activeBranchCommit?.shortSha ?? "—"}</strong>
-          <p>{activeBranchCommit?.message.split("\n")[0] ?? "Pick a commit to inspect this IFC state."}</p>
+      {totalPages > 1 ? (
+        <div className="version-strip__toolbar">
+          <div className="version-strip__page-copy">Page {clampedPage + 1} of {totalPages}</div>
+          <div className="version-strip__nav">
+            <button
+              type="button"
+              className="version-strip__nav-button"
+              onClick={() => setPage((currentPage) => Math.max(currentPage - 1, 0))}
+              disabled={clampedPage === 0}
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              className="version-strip__nav-button"
+              onClick={() => setPage((currentPage) => Math.min(currentPage + 1, totalPages - 1))}
+              disabled={clampedPage >= totalPages - 1}
+            >
+              Next
+            </button>
+          </div>
         </div>
-        <div className="version-strip__summary-card">
-          <span>File version</span>
-          <strong>{activeVersionCommit?.shortSha ?? "—"}</strong>
-          <p>
-            {activeVersionCommit
-              ? `${activeVersionCommit.authorName} · ${activeVersionCommit.relativeTime}`
-              : "Each dot below is a real saved revision of the selected IFC file."}
-          </p>
-        </div>
-      </div>
+      ) : null}
 
-      <div className="version-strip__track">
-        <div className="version-strip__line" />
-        <div className="version-strip__dots">
-          {versions.length > 0 ? (
-            versions.map((commit, index) => (
-              <button
-                key={commit.sha}
-                type="button"
-                className={`version-stop ${commit.sha === visibleVersionSha ? "is-active" : ""}`}
-                onClick={() => setActiveSha(commit.sha)}
-                title={`${commit.shortSha} — ${commit.message.split("\n")[0]}`}
-                aria-label={`Show version ${commit.shortSha}`}
-              >
-                <span className="version-stop__badge">
-                  {index === 0 ? "Start" : index === versions.length - 1 ? "Latest" : "Version"}
-                </span>
-                <strong>{commit.shortSha}</strong>
-                <p>{commit.message.split("\n")[0]}</p>
-                <span className="version-stop__meta">{commit.relativeTime}</span>
-                <span className="version-stop__dot" />
-              </button>
-            ))
-          ) : (
-            <div className="version-strip__empty">
-              {activePath
-                ? "No IFC revision history found for this file yet."
-                : "Choose an IFC file to see its version history."}
-            </div>
-          )}
+      {versions.length > 0 ? (
+        <div
+          className="version-strip__carousel"
+          style={{ "--history-columns": String(pageSize) } as CSSProperties}
+        >
+          {visibleVersions.map((commit, index) => (
+            <button
+              key={commit.sha}
+              type="button"
+              className={`version-stop ${commit.sha === visibleVersionSha ? "is-active" : ""}`}
+              onClick={() => setActiveSha(commit.sha)}
+              title={`${commit.shortSha} — ${commit.message.split("\n")[0]}`}
+              aria-label={`Show version ${commit.shortSha}`}
+            >
+              <span className="version-stop__badge">
+                {clampedPage === 0 && index === 0
+                  ? "Start"
+                  : clampedPage === totalPages - 1 && index === visibleVersions.length - 1
+                    ? "Latest"
+                    : "Version"}
+              </span>
+              <strong>{commit.shortSha}</strong>
+              <p>{commit.message.split("\n")[0]}</p>
+              <span className="version-stop__meta">
+                {commit.authorName} · {commit.relativeTime}
+              </span>
+            </button>
+          ))}
         </div>
-      </div>
-
-      <div className="version-strip__caption">
-        {activeVersionCommit
-          ? `Showing file revision ${activeVersionCommit.shortSha} from ${activeVersionCommit.message.split("\n")[0]}`
-          : activeCommit
-            ? `Viewing branch commit ${activeCommit.shortSha} - ${activeCommit.message.split("\n")[0]}`
-            : "Each dot represents a saved version of the selected IFC file."}
-      </div>
+      ) : (
+        <div className="version-strip__empty">
+          {activePath
+            ? "No IFC revision history found for this file yet."
+            : "Choose an IFC file to see its version history."}
+        </div>
+      )}
     </div>
   );
 }

@@ -10,12 +10,9 @@ import { useAppStore } from "./store/useAppStore";
 
 export default function App() {
   const autoConnectAttemptedRef = useRef(false);
-  const branches = useAppStore((state) => state.branches);
-  const commits = useAppStore((state) => state.commits);
-  const activeSha = useAppStore((state) => state.activeSha);
   const repo = useAppStore((state) => state.repo);
 
-  const { connectRepo, selectBranch, loadIfcPathsForSha, isConnecting, error } = useGitHub();
+  const { connectRepo, loadIfcPathsForSha, isConnecting } = useGitHub();
 
   useEffect(() => {
     if (autoConnectAttemptedRef.current) {
@@ -30,39 +27,24 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Header
-        isConnecting={isConnecting}
-        error={error}
-        onConnect={connectRepo}
-        onBranchChange={selectBranch}
-      />
+      <Header />
 
       <main className="workspace-grid">
-        <section className="workspace-grid__left">
-          <div className="overview-strip">
-            <div className="overview-card">
-              <span>Branches</span>
-              <strong>{branches.length}</strong>
-            </div>
-            <div className="overview-card">
-              <span>Commits in graph</span>
-              <strong>{commits.length}</strong>
-            </div>
-            <div className="overview-card">
-              <span>Active commit</span>
-              <strong>{activeSha?.slice(0, 7) ?? "—"}</strong>
-            </div>
-          </div>
-
+        <section className="workspace-grid__graph">
           <GitGraph />
         </section>
 
-        <section className="workspace-grid__center">
+        <section className="workspace-grid__viewer">
           <Viewer3D loadIfcPathsForSha={loadIfcPathsForSha} />
+        </section>
+
+        <section className="workspace-grid__history">
           <ViewerVersionTimeline />
         </section>
 
-        <PropertiesPanel />
+        <section className="workspace-grid__properties">
+          <PropertiesPanel />
+        </section>
       </main>
     </div>
   );
