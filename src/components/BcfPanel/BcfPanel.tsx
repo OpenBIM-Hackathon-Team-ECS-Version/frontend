@@ -21,6 +21,7 @@ import {
   appendComment,
   appendViewpoint,
 } from "../../lib/bcf";
+import { isResolvedStatus } from "../../lib/bcfTimeline";
 import { fetchRepoFileBuffer, getFileCommitHistory } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
 import type { BCFTopic, BCFViewpoint, BcfPanelTopicDraft } from "../../types/bcf";
@@ -88,7 +89,23 @@ export function BcfPanel() {
     () => availableBcfFiles.slice().sort((left, right) => right.path.localeCompare(left.path)),
     [availableBcfFiles],
   );
-  const topics = useMemo(() => listTopics(bcfProject), [bcfProject]);
+  const topics = useMemo(
+    () =>
+      listTopics(bcfProject).sort((left, right) => {
+        const leftResolved = isResolvedStatus(left.topicStatus);
+        const rightResolved = isResolvedStatus(right.topicStatus);
+        if (leftResolved !== rightResolved) {
+          return Number(leftResolved) - Number(rightResolved);
+        }
+
+        const leftTimestamp = Date.parse(left.modifiedDate ?? left.creationDate ?? "");
+        const rightTimestamp = Date.parse(right.modifiedDate ?? right.creationDate ?? "");
+        const safeLeftTimestamp = Number.isNaN(leftTimestamp) ? 0 : leftTimestamp;
+        const safeRightTimestamp = Number.isNaN(rightTimestamp) ? 0 : rightTimestamp;
+        return safeRightTimestamp - safeLeftTimestamp;
+      }),
+    [bcfProject],
+  );
   const selectedTopic = selectedTopicGuid ? bcfProject?.topics.get(selectedTopicGuid) ?? null : null;
   const selectedMetadata = useMemo(
     () => (selectedTopic ? parseTopicMetadata(selectedTopic) : null),
@@ -97,7 +114,7 @@ export function BcfPanel() {
   const selectedViewpoint =
     selectedTopic?.viewpoints.find((viewpoint) => viewpoint.guid === selectedViewpointGuid) ?? null;
   const openTopicCount = useMemo(
-    () => topics.filter((topic) => (topic.topicStatus ?? "Open").toLowerCase() !== "resolved").length,
+    () => topics.filter((topic) => !isResolvedStatus(topic.topicStatus)).length,
     [topics],
   );
   const selectedTopicDirty = useMemo(
@@ -551,11 +568,12 @@ export function BcfPanel() {
                   ) : (
                     topics.map((topic) => {
                       const metadata = parseTopicMetadata(topic);
+                      const statusClass = isResolvedStatus(topic.topicStatus) ? "bcf-topic-card--resolved" : "bcf-topic-card--open";
                       return (
                         <button
                           key={topic.guid}
                           type="button"
-                          className={`bcf-topic-card ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                          className={`bcf-topic-card ${statusClass} ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
                           onClick={() => {
                             setSelectedTopicGuid(topic.guid);
                             setDetailTab("overview");
