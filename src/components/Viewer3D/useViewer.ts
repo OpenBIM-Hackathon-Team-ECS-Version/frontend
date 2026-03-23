@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type MouseEvent,
   type PointerEvent,
   type WheelEvent,
@@ -20,11 +21,19 @@ import { GeometryProcessor } from "@ifc-lite/geometry";
 import { Renderer, type ProjectionMode } from "@ifc-lite/renderer";
 
 import type { Theme } from "../../hooks/useTheme";
-import { colorOverridesToGuids, getGuidForExpressId, mapGuidsToExpressIds } from "../../lib/bcf";
+import {
+  colorOverridesToGuids,
+  getGuidForExpressId,
+  importBcfProject,
+  mapGuidsToExpressIds,
+} from "../../lib/bcf";
+import { buildTopicHistoryByGuid, buildTopicLifecycle, type TopicHistoryMap } from "../../lib/bcfTimeline";
 import { BCFOverlayRenderer, computeMarkerPositions } from "../../lib/bcfOverlay";
+import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
 import type {
   BCFMarker3D,
+  BCFProject,
   BCFTopic,
   BcfViewerBridge,
   BCFOverlayProjection,
@@ -32,6 +41,7 @@ import type {
   ViewerCameraState,
   ViewerSectionPlane,
 } from "../../types/bcf";
+import type { GitCommit } from "../../types/git";
 import type { IfcDiffResult, IfcPropertyGroup, SelectedIfcEntity } from "../../types/ifc";
 
 const MAX_RENDER_DIMENSION = 4096;
@@ -194,7 +204,14 @@ export function useViewer(theme: Theme) {
   });
 
   const currentStore = useAppStore((state) => state.currentStore);
-  const bcfProject = useAppStore((state) => state.bcfProject);
+  const repo = useAppStore((state) => state.repo);
+  const authToken = useAppStore((state) => state.authToken);
+  const activePath = useAppStore((state) => state.activePath);
+  const activeSha = useAppStore((state) => state.activeSha);
+  const branches = useAppStore((state) => state.branches);
+  const selectedBranch = useAppStore((state) => state.selectedBranch);
+  const availableBcfFiles = useAppStore((state) => state.availableBcfFiles);
+  const bcfSourceName = useAppStore((state) => state.bcfSourceName);
   const selectedTopicGuid = useAppStore((state) => state.selectedTopicGuid);
   const selectedExpressId = useAppStore((state) => state.selectedExpressId);
   const viewerHiddenExpressIds = useAppStore((state) => state.viewerHiddenExpressIds);
@@ -215,6 +232,9 @@ export function useViewer(theme: Theme) {
   const setViewerIsolatedExpressIds = useAppStore((state) => state.setViewerIsolatedExpressIds);
   const setViewerColoredExpressIds = useAppStore((state) => state.setViewerColoredExpressIds);
   const setActiveSectionPlane = useAppStore((state) => state.setActiveSectionPlane);
+  const [timelineVersions, setTimelineVersions] = useState<GitCommit[]>([]);
+  const [historyBcfProject, setHistoryBcfProject] = useState<BCFProject | null>(null);
+  const [topicHistoryByGuid, setTopicHistoryByGuid] = useState<TopicHistoryMap>(new Map());
 
   const syncViewerStateFromRenderer = useCallback(() => {
     const renderer = rendererRef.current;
@@ -265,6 +285,11 @@ export function useViewer(theme: Theme) {
       notifyOverlayProjectionChanged();
     },
     [notifyOverlayProjectionChanged],
+  );
+
+  const selectedBcfFile = useMemo(
+    () => availableBcfFiles.find((file) => file.path === bcfSourceName) ?? null,
+    [availableBcfFiles, bcfSourceName],
   );
 
   const resizeRenderer = useCallback(() => {
@@ -509,6 +534,134 @@ export function useViewer(theme: Theme) {
   ]);
 
   useEffect(() => {
+    if (!repo || !activePath) {
+      setTimelineVersions([]);
+      return;
+    }
+
+    let cancelled = false;
+    const resolvedRepo = repo;
+    const resolvedActivePath = activePath;
+    const prioritizedBranches =
+      selectedBranch
+        ? branches.filter((branch) => branch.name === selectedBranch)
+        : branches.slice(0, 6);
+
+    async function loadVersions() {
+      try {
+        const historyByBranch = await Promise.all(
+          prioritizedBranches.map(async (branch) => [
+            branch.name,
+            await getFileCommitHistory(
+              resolvedRepo,
+              branch.name,
+              resolvedActivePath,
+              authToken,
+              20,
+            ),
+          ] as const),
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        const mergedHistory = mergeBranchCommits(Object.fromEntries(historyByBranch));
+        setTimelineVersions(mergedHistory.slice().reverse());
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setTimelineVersions([]);
+        }
+      }
+    }
+
+    void loadVersions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePath, authToken, branches, repo, selectedBranch]);
+
+  useEffect(() => {
+    if (!repo || !selectedBcfFile) {
+      setHistoryBcfProject(null);
+      return;
+    }
+
+    let cancelled = false;
+    const resolvedRepo = repo;
+    const resolvedBcfPath = selectedBcfFile.path;
+    const resolvedBcfRef = selectedBcfFile.sha;
+
+    async function loadHistoryBcfProject() {
+      try {
+        const buffer = await fetchRepoFileBuffer(
+          resolvedRepo,
+          resolvedBcfRef,
+          resolvedBcfPath,
+          authToken,
+        );
+        const project = await importBcfProject(buffer);
+        if (!cancelled) {
+          setHistoryBcfProject(project);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setHistoryBcfProject(null);
+        }
+      }
+    }
+
+    void loadHistoryBcfProject();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, repo, selectedBcfFile]);
+
+  useEffect(() => {
+    const topics = historyBcfProject ? Array.from(historyBcfProject.topics.values()) : [];
+    if (!repo || !selectedBcfFile || topics.length === 0) {
+      setTopicHistoryByGuid(new Map());
+      return;
+    }
+
+    let cancelled = false;
+    const resolvedRepo = repo;
+    const resolvedBcfPath = selectedBcfFile.path;
+    const resolvedBcfRef = selectedBranch ?? selectedBcfFile.branch;
+
+    async function loadTopicHistory() {
+      try {
+        const historyByGuid = await buildTopicHistoryByGuid({
+          authToken,
+          bcfPath: resolvedBcfPath,
+          bcfRef: resolvedBcfRef,
+          repo: resolvedRepo,
+          topics,
+        });
+
+        if (!cancelled) {
+          setTopicHistoryByGuid(historyByGuid);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setTopicHistoryByGuid(new Map());
+        }
+      }
+    }
+
+    void loadTopicHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, historyBcfProject, repo, selectedBcfFile, selectedBranch]);
+
+  useEffect(() => {
     clearColorRef.current = getClearColor(theme);
     renderScene();
   }, [renderScene, theme]);
@@ -517,17 +670,17 @@ export function useViewer(theme: Theme) {
     const renderer = rendererRef.current;
     const overlayRenderer = overlayRendererRef.current;
     if (!overlayRenderer) {
-      if (bcfProject) {
+      if (historyBcfProject) {
         console.debug("[bcf-overlay] skipped marker update because renderer is unavailable");
       }
       return;
     }
 
-    if (!renderer || !currentStore || !bcfProject || typeof computeMarkerPositions !== "function") {
+    if (!renderer || !currentStore || !historyBcfProject || typeof computeMarkerPositions !== "function") {
       console.debug("[bcf-overlay] clearing markers", {
         hasRenderer: Boolean(renderer),
         hasStore: Boolean(currentStore),
-        hasProject: Boolean(bcfProject),
+        hasProject: Boolean(historyBcfProject),
         hasOverlayModule: typeof computeMarkerPositions === "function",
       });
       overlayRenderer.setMarkers([]);
@@ -543,7 +696,15 @@ export function useViewer(theme: Theme) {
       }
     });
 
-    const topics = Array.from(bcfProject.topics.values()) as BCFTopic[];
+    const allTopics = Array.from(historyBcfProject.topics.values()) as BCFTopic[];
+    const topics =
+      activeSha && timelineVersions.length > 0
+        ? allTopics.filter((topic) => {
+            const lifecycle = buildTopicLifecycle(topic, timelineVersions, topicHistoryByGuid);
+            return lifecycle?.visibleCommitShas.includes(activeSha) ?? false;
+          })
+        : allTopics;
+
     const unresolvedByTopic = topics.map((topic) => {
       const selectedGuids =
         topic.viewpoints[0]?.components?.selection
@@ -595,7 +756,7 @@ export function useViewer(theme: Theme) {
     overlayRenderer.setActiveMarker(selectedTopicGuid);
     overlayRenderer.setVisible(markers.length > 0);
     overlayRenderer.updatePositions();
-  }, [bcfProject, currentStore, selectedTopicGuid]);
+  }, [activeSha, currentStore, historyBcfProject, selectedTopicGuid, timelineVersions, topicHistoryByGuid]);
 
   useEffect(() => {
     overlayRendererRef.current?.setActiveMarker(selectedTopicGuid);

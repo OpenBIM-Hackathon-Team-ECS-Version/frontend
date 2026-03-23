@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
-import { getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
-import { listTopics, parseTopicMetadata } from "../../lib/bcf";
+import { importBcfProject, listTopics } from "../../lib/bcf";
+import {
+  buildTopicHistoryByGuid,
+  buildTopicLifecycle,
+  getTopicAnchorTimestamp,
+  resolveTopicCommitSha,
+  type TopicHistoryEntry,
+} from "../../lib/bcfTimeline";
+import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
+import type { BCFProject } from "../../types/bcf";
 
 export function ViewerVersionTimeline() {
   const repo = useAppStore((state) => state.repo);
@@ -13,7 +21,6 @@ export function ViewerVersionTimeline() {
   const branches = useAppStore((state) => state.branches);
   const selectedBranch = useAppStore((state) => state.selectedBranch);
   const availableBcfFiles = useAppStore((state) => state.availableBcfFiles);
-  const bcfProject = useAppStore((state) => state.bcfProject);
   const bcfSourceName = useAppStore((state) => state.bcfSourceName);
   const selectedTopicGuid = useAppStore((state) => state.selectedTopicGuid);
   const setActiveSha = useAppStore((state) => state.setActiveSha);
@@ -25,6 +32,8 @@ export function ViewerVersionTimeline() {
   const [visibleVersionSha, setVisibleVersionSha] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(6);
+  const [historyBcfProject, setHistoryBcfProject] = useState<BCFProject | null>(null);
+  const [topicHistoryByGuid, setTopicHistoryByGuid] = useState<Map<string, TopicHistoryEntry[]>>(new Map());
 
   useEffect(() => {
     if (!repo || !activePath) {
@@ -137,11 +146,98 @@ export function ViewerVersionTimeline() {
     const start = clampedPage * pageSize;
     return versions.slice(start, start + pageSize);
   }, [clampedPage, pageSize, versions]);
-  const topics = useMemo(() => listTopics(bcfProject), [bcfProject]);
+  const topics = useMemo(() => listTopics(historyBcfProject), [historyBcfProject]);
   const selectedBcfFile = useMemo(
     () => availableBcfFiles.find((file) => file.path === bcfSourceName) ?? null,
     [availableBcfFiles, bcfSourceName],
   );
+
+  useEffect(() => {
+    if (!repo || !selectedBcfFile) {
+      setHistoryBcfProject(null);
+      return;
+    }
+
+    let cancelled = false;
+    const resolvedRepo = repo;
+    const resolvedBcfPath = selectedBcfFile.path;
+    const resolvedBcfRef = selectedBcfFile.sha;
+
+    async function loadHistoryBcfProject() {
+      try {
+        const buffer = await fetchRepoFileBuffer(
+          resolvedRepo,
+          resolvedBcfRef,
+          resolvedBcfPath,
+          authToken,
+        );
+        const project = await importBcfProject(buffer);
+        if (!cancelled) {
+          setHistoryBcfProject(project);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setHistoryBcfProject(null);
+        }
+      }
+    }
+
+    void loadHistoryBcfProject();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, repo, selectedBcfFile]);
+
+  useEffect(() => {
+    if (!repo || !selectedBcfFile || topics.length === 0) {
+      setTopicHistoryByGuid(new Map());
+      return;
+    }
+
+    let cancelled = false;
+    const topicGuids = new Set(topics.map((topic) => topic.guid));
+    const resolvedRepo = repo;
+    const resolvedBcfPath = selectedBcfFile.path;
+    const resolvedBcfRef = selectedBranch ?? selectedBcfFile.branch;
+
+    async function loadTopicHistory() {
+      try {
+        if (cancelled) {
+          return;
+        }
+
+        const historyByGuid = await buildTopicHistoryByGuid({
+          authToken,
+          bcfPath: resolvedBcfPath,
+          bcfRef: resolvedBcfRef,
+          repo: resolvedRepo,
+          topics: topics.filter((topic) => topicGuids.has(topic.guid)),
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!cancelled) {
+          setTopicHistoryByGuid(historyByGuid);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setTopicHistoryByGuid(new Map<string, TopicHistoryEntry[]>());
+        }
+      }
+    }
+
+    void loadTopicHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, repo, selectedBcfFile, selectedBranch, topics]);
+
   const topicsByVisibleSha = useMemo(() => {
     const grouped = new Map<string, typeof topics>();
 
@@ -150,22 +246,31 @@ export function ViewerVersionTimeline() {
     });
 
     topics.forEach((topic) => {
-      const metadata = parseTopicMetadata(topic);
-      const topicSha = metadata.activeSha ?? selectedBcfFile?.sha ?? null;
-      if (!topicSha) {
+      const lifecycle = buildTopicLifecycle(topic, versions, topicHistoryByGuid);
+      if (!lifecycle) {
         return;
       }
 
-      const bucket = grouped.get(topicSha);
-      if (!bucket) {
-        return;
-      }
+      lifecycle.visibleCommitShas.forEach((commitSha) => {
+        const bucket = grouped.get(commitSha);
+        if (!bucket) {
+          return;
+        }
 
-      bucket.push(topic);
+        bucket.push(lifecycle.topic);
+      });
+    });
+
+    grouped.forEach((bucket) => {
+      bucket.sort((left, right) => {
+        const leftTimestamp = getTopicAnchorTimestamp(left) ?? 0;
+        const rightTimestamp = getTopicAnchorTimestamp(right) ?? 0;
+        return rightTimestamp - leftTimestamp;
+      });
     });
 
     return grouped;
-  }, [selectedBcfFile?.sha, topics, visibleVersions]);
+  }, [topicHistoryByGuid, topics, versions, visibleVersions]);
 
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, totalPages - 1));
@@ -191,37 +296,39 @@ export function ViewerVersionTimeline() {
     }
 
     const topic = topics.find((entry) => entry.guid === selectedTopicGuid);
-    const topicSha = topic
-      ? parseTopicMetadata(topic).activeSha ?? selectedBcfFile?.sha ?? null
-      : null;
-    if (!topicSha) {
+    const lifecycle = topic ? buildTopicLifecycle(topic, versions, topicHistoryByGuid) : null;
+    const targetSha =
+      activeSha && lifecycle?.visibleCommitShas.includes(activeSha)
+        ? activeSha
+        : lifecycle?.visibleCommitShas[lifecycle.visibleCommitShas.length - 1] ?? null;
+    if (!targetSha) {
       return;
     }
 
-    const topicIndex = versions.findIndex((commit) => commit.sha === topicSha);
+    const topicIndex = versions.findIndex((commit) => commit.sha === targetSha);
     if (topicIndex < 0) {
       return;
     }
 
     const nextPage = Math.floor(topicIndex / pageSize);
     setPage((currentPage) => (currentPage === nextPage ? currentPage : nextPage));
-  }, [pageSize, selectedBcfFile?.sha, selectedTopicGuid, topics, versions]);
+  }, [activeSha, pageSize, selectedTopicGuid, topicHistoryByGuid, topics, versions]);
 
   return (
     <div className="version-strip">
       <div className="version-strip__header">
-        <div>
+        <div className="version-strip__title">
           <span className="version-strip__label">Model history</span>
           <strong>{activePath ?? "No IFC file selected yet"}</strong>
         </div>
         <div className="version-strip__meta">
-          <span>{loading ? "Loading versions..." : `${versions.length} versions`}</span>
-          <span>
+          <span className="version-strip__meta-pill">{loading ? "Loading..." : `${versions.length} versions`}</span>
+          <span className="version-strip__meta-pill">
             {activeVersionCommit
-              ? `Visible version ${activeVersionCommit.shortSha}`
+              ? `Visible ${activeVersionCommit.shortSha}`
               : activeCommit
-                ? `Viewing commit ${activeCommit.shortSha}`
-                : "Select a version"}
+                ? `Viewing ${activeCommit.shortSha}`
+                : "Select version"}
           </span>
         </div>
       </div>

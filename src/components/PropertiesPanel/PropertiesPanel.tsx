@@ -1,65 +1,31 @@
+import { useEffect, useMemo, useState } from "react";
+
+import type { IfcDiffDetail, QueryComponentRecord } from "../../types/ifc";
+import { mapGuidsToExpressIds } from "../../lib/ifcDiff";
 import { useVersionedQueryExplorer } from "../../hooks/useVersionedQueryExplorer";
 import { useAppStore } from "../../store/useAppStore";
-import type { QueryComponentRecord } from "../../types/ifc";
 
-function ResultList({ title, items }: { title: string; items: string[] }) {
-  return (
-    <section className="results-group">
-      <h4>{title}</h4>
-      {items.length === 0 ? (
-        <p className="results-group__empty">None</p>
-      ) : (
-        <ul className="results-group__list">
-          {items.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
+type ImpactedChange = {
+  globalId: string;
+  status: "added" | "changed" | "deleted";
+  title: string;
+  subtitle: string;
+  type: string;
+  detail: IfcDiffDetail | null;
+  changedFields: string[];
+};
 
-function DiffDetailList() {
-  const diffResult = useAppStore((state) => state.diffResult);
-  const detailItems = diffResult
-    ? Object.values(diffResult.detailsById).sort((left, right) => {
-        const statusOrder = { changed: 0, added: 1, deleted: 2 } as const;
-        return (
-          statusOrder[left.status] - statusOrder[right.status] ||
-          left.type.localeCompare(right.type) ||
-          left.globalId.localeCompare(right.globalId)
-        );
-      })
-    : [];
+const STATUS_ORDER: Record<ImpactedChange["status"], number> = {
+  changed: 0,
+  added: 1,
+  deleted: 2,
+};
 
-  return (
-    <section className="results-group">
-      <h4>Component details</h4>
-      {detailItems.length === 0 ? (
-        <p className="results-group__empty">No detailed component metadata reported.</p>
-      ) : (
-        <ul className="results-group__changes">
-          {detailItems.map((detail) => (
-            <li key={detail.globalId}>
-              <strong>{detail.globalId}</strong>
-              <span>
-                {detail.status} · {detail.type}
-                {detail.previousType && detail.previousType !== detail.type
-                  ? ` (was ${detail.previousType})`
-                  : ""}
-              </span>
-              <code>
-                {[detail.name, detail.objectType, detail.tag].filter(Boolean).join(" · ") ||
-                  detail.description ||
-                  "No descriptive fields"}
-              </code>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
+const STATUS_LABEL: Record<ImpactedChange["status"], string> = {
+  added: "Added",
+  changed: "Changed",
+  deleted: "Deleted",
+};
 
 function summarizeComponent(component: QueryComponentRecord) {
   const summaryParts = [
@@ -89,6 +55,200 @@ function summarizeComponent(component: QueryComponentRecord) {
   return extraParts.join(" · ") || "No compact summary available";
 }
 
+function getReadableTitle(detail: IfcDiffDetail | null, globalId: string) {
+  return (
+    detail?.name?.trim() ||
+    detail?.objectType?.trim() ||
+    detail?.tag?.trim() ||
+    detail?.type ||
+    globalId
+  );
+}
+
+function getReadableSubtitle(detail: IfcDiffDetail | null, changedFields: string[]) {
+  const parts = [
+    detail?.type ?? null,
+    detail?.previousType && detail.previousType !== detail.type ? `was ${detail.previousType}` : null,
+    detail?.objectType ?? null,
+    detail?.tag ?? null,
+    changedFields.length > 0 ? `${changedFields.length} field${changedFields.length === 1 ? "" : "s"} changed` : null,
+  ].filter(Boolean);
+
+  return parts.join(" · ") || "No descriptive metadata";
+}
+
+function buildImpactedChanges(diffResult: ReturnType<typeof useAppStore.getState>["diffResult"]) {
+  if (!diffResult) {
+    return [];
+  }
+
+  const allIds = new Set<string>([
+    ...diffResult.added,
+    ...diffResult.changed,
+    ...diffResult.deleted,
+    ...Object.keys(diffResult.detailsById),
+    ...Object.keys(diffResult.changesById),
+  ]);
+
+  return Array.from(allIds)
+    .map((globalId) => {
+      const detail = diffResult.detailsById[globalId] ?? null;
+      const changeMeta = diffResult.changesById[globalId];
+      const status =
+        detail?.status ??
+        (diffResult.changed.has(globalId)
+          ? "changed"
+          : diffResult.added.has(globalId)
+            ? "added"
+            : "deleted");
+      const changedFields = detail?.changedFields ?? changeMeta?.fields ?? [];
+
+      return {
+        globalId,
+        status,
+        title: getReadableTitle(detail, globalId),
+        subtitle: getReadableSubtitle(detail, changedFields),
+        type: detail?.type ?? changeMeta?.type ?? "Unknown type",
+        detail,
+        changedFields,
+      } satisfies ImpactedChange;
+    })
+    .sort((left, right) => {
+      return (
+        STATUS_ORDER[left.status] - STATUS_ORDER[right.status] ||
+        left.title.localeCompare(right.title) ||
+        left.globalId.localeCompare(right.globalId)
+      );
+    });
+}
+
+function ChangeSummary({
+  diffResult,
+  impactedCount,
+}: {
+  diffResult: NonNullable<ReturnType<typeof useAppStore.getState>["diffResult"]>;
+  impactedCount: number;
+}) {
+  return (
+    <section className="results-hero">
+      <div className="results-hero__content">
+        <h3>{impactedCount} impacted element{impactedCount === 1 ? "" : "s"}</h3>
+        <p>
+          Base <strong>{diffResult.baseSha.slice(0, 7)}</strong> to current{" "}
+          <strong>{diffResult.compareSha.slice(0, 7)}</strong>
+        </p>
+      </div>
+      <div className="diff-summary">
+        <div className="diff-summary__item diff-summary__item--added">
+          <span>Added</span>
+          <strong>{diffResult.added.size}</strong>
+        </div>
+        <div className="diff-summary__item diff-summary__item--changed">
+          <span>Changed</span>
+          <strong>{diffResult.changed.size}</strong>
+        </div>
+        <div className="diff-summary__item diff-summary__item--deleted">
+          <span>Deleted</span>
+          <strong>{diffResult.deleted.size}</strong>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ImpactedComponentsList({
+  items,
+  activeId,
+  onSelect,
+}: {
+  items: ImpactedChange[];
+  activeId: string | null;
+  onSelect: (globalId: string) => void;
+}) {
+  return (
+    <section className="results-section">
+      <header className="results-section__header">
+        <h3>Impacted elements</h3>
+        <p>Prioritized for review before raw IFC identifiers.</p>
+      </header>
+
+      <div className="impact-list">
+        {items.map((item) => (
+          <button
+            key={item.globalId}
+            type="button"
+            className={`impact-card ${item.globalId === activeId ? "is-active" : ""}`}
+            onClick={() => onSelect(item.globalId)}
+          >
+            <div className="impact-card__topline">
+              <span className={`impact-badge impact-badge--${item.status}`}>{STATUS_LABEL[item.status]}</span>
+              <span className="impact-card__type">{item.type}</span>
+            </div>
+            <strong>{item.title}</strong>
+            <span>{item.subtitle}</span>
+            <code>{item.globalId}</code>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SelectedChangeDetails({ item }: { item: ImpactedChange | null }) {
+  if (!item) {
+    return (
+      <section className="results-empty">
+        <h3>No impacted element selected</h3>
+        <p>Pick an item from the list to inspect what changed and where to look in the model.</p>
+      </section>
+    );
+  }
+
+  const descriptor = [item.detail?.name, item.detail?.objectType, item.detail?.tag].filter(Boolean).join(" · ");
+
+  return (
+    <section className="results-section">
+      <header className="results-section__header">
+        <h3>Selected element</h3>
+        <p>{STATUS_LABEL[item.status]} in this revision</p>
+      </header>
+
+      <div className="results-detail-card">
+        <div className="results-detail-card__headline">
+          <div>
+            <span className={`impact-badge impact-badge--${item.status}`}>{STATUS_LABEL[item.status]}</span>
+            <h4>{item.title}</h4>
+          </div>
+          <span className="results-detail-card__type">{item.type}</span>
+        </div>
+
+        <div className="results-meta-grid">
+          <div className="results-meta-block">
+            <strong>Changed fields</strong>
+            <span>{item.changedFields.length > 0 ? item.changedFields.join(", ") : "No changed fields reported"}</span>
+          </div>
+          <div className="results-meta-block">
+            <strong>Description</strong>
+            <span>{descriptor || item.detail?.description || "No descriptive fields"}</span>
+          </div>
+          <div className="results-meta-block">
+            <strong>Global ID</strong>
+            <code>{item.globalId}</code>
+          </div>
+          <div className="results-meta-block">
+            <strong>Type context</strong>
+            <span>
+              {item.detail?.previousType && item.detail.previousType !== item.detail.type
+                ? `${item.detail.previousType} -> ${item.detail.type}`
+                : item.type}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function QueryExplorer() {
   const queryVersions = useAppStore((state) => state.queryVersions);
   const selectedQueryVersion = useAppStore((state) => state.selectedQueryVersion);
@@ -106,217 +266,212 @@ function QueryExplorer() {
   const hasActiveFilters = Boolean(queryFilters.type);
 
   return (
-    <section className="results-detail explorer-detail">
-      <header className="results-detail__header">
-        <h3>Query explorer</h3>
-        <p>Inspect indexed backend snapshots by version and type, separate from raw GitHub IFC history.</p>
-      </header>
+    <details className="results-advanced">
+      <summary>Advanced query explorer</summary>
 
-      <div className="results-group explorer-controls">
-        <label className="field">
-          <span className="field__label">Indexed version</span>
-          <select
-            value={selectedQueryVersion ?? ""}
-            onChange={(event) =>
-              setQueryExplorerState({
-                selectedQueryVersion: event.target.value || null,
-                queryResults: [],
-                queryResultCount: 0,
-                queryResultTruncated: false,
-              })
-            }
-            disabled={queryVersions.length === 0}
-          >
-            <option value="" disabled>
-              {queryVersions.length === 0 ? "No backend versions" : "Select indexed version"}
-            </option>
-            {queryVersions.map((version) => (
-              <option key={version.versionId} value={version.versionId}>
-                {version.shortId} · {version.message.split("\n")[0]}
+      <section className="results-detail explorer-detail">
+        <header className="results-section__header">
+          <h3>Backend index</h3>
+          <p>Inspect indexed backend snapshots by version and type, separate from raw GitHub IFC history.</p>
+        </header>
+
+        <div className="results-group explorer-controls">
+          <label className="field">
+            <span className="field__label">Indexed version</span>
+            <select
+              value={selectedQueryVersion ?? ""}
+              onChange={(event) =>
+                setQueryExplorerState({
+                  selectedQueryVersion: event.target.value || null,
+                  queryResults: [],
+                  queryResultCount: 0,
+                  queryResultTruncated: false,
+                })
+              }
+              disabled={queryVersions.length === 0}
+            >
+              <option value="" disabled>
+                {queryVersions.length === 0 ? "No backend versions" : "Select indexed version"}
               </option>
-            ))}
-          </select>
-        </label>
+              {queryVersions.map((version) => (
+                <option key={version.versionId} value={version.versionId}>
+                  {version.shortId} · {version.message.split("\n")[0]}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        <div className="explorer-version-meta">
-          {selectedVersionMeta ? (
-            <>
-              <strong>{selectedVersionMeta.shortId}</strong>
-              <span>{selectedVersionMeta.author}</span>
-              <span>{new Date(selectedVersionMeta.timestamp).toLocaleString()}</span>
-            </>
-          ) : (
-            <span>No indexed version selected yet.</span>
-          )}
+          <div className="explorer-version-meta">
+            {selectedVersionMeta ? (
+              <>
+                <strong>{selectedVersionMeta.shortId}</strong>
+                <span>{selectedVersionMeta.author}</span>
+                <span>{new Date(selectedVersionMeta.timestamp).toLocaleString()}</span>
+              </>
+            ) : (
+              <span>No indexed version selected yet.</span>
+            )}
+          </div>
+
+          <label className="field">
+            <span className="field__label">Type</span>
+            <select
+              value={queryFilters.type ?? ""}
+              onChange={(event) => setQueryFilters({ type: event.target.value || null })}
+              disabled={!selectedQueryVersion || queryTypes.length === 0}
+            >
+              <option value="">All types</option>
+              {queryTypes.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="explorer-meta">
+            <span>
+              {queryLoading
+                ? "Loading indexed matches..."
+                : `${queryResultCount} indexed match${queryResultCount === 1 ? "" : "es"}`}
+            </span>
+            <span>
+              {queryResultTruncated
+                ? `Showing first ${queryResults.length} results`
+                : queryResults.length > 0
+                  ? `Showing all ${queryResults.length}`
+                  : "Choose a type to load indexed matches"}
+            </span>
+          </div>
         </div>
 
-        <label className="field">
-          <span className="field__label">Type</span>
-          <select
-            value={queryFilters.type ?? ""}
-            onChange={(event) => setQueryFilters({ type: event.target.value || null })}
-            disabled={!selectedQueryVersion || queryTypes.length === 0}
-          >
-            <option value="">All types</option>
-            {queryTypes.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="explorer-meta">
-          <span>
-            {queryLoading
-              ? "Loading indexed matches..."
-              : `${queryResultCount} indexed match${queryResultCount === 1 ? "" : "es"}`}
-          </span>
-          <span>
-            {queryResultTruncated
-              ? `Showing first ${queryResults.length} results`
-              : queryResults.length > 0
-                ? `Showing all ${queryResults.length}`
-                : "Choose a type to load indexed matches"}
-          </span>
-        </div>
-      </div>
-
-      {queryError ? (
-        <div className="results-empty">
-          <h3>Backend explorer unavailable</h3>
-          <p>{queryError}</p>
-        </div>
-      ) : !selectedQueryVersion ? (
-        <div className="results-empty">
-          <h3>No indexed versions</h3>
-          <p>The backend did not return any versioned snapshots to explore.</p>
-        </div>
-      ) : !hasActiveFilters ? (
-        <div className="results-empty">
-          <h3>Pick a type filter</h3>
-          <p>Select a type to query the backend index for this version.</p>
-        </div>
-      ) : queryResults.length === 0 && !queryLoading ? (
-        <div className="results-empty">
-          <h3>No indexed matches</h3>
-          <p>Try a different type for this indexed backend version.</p>
-        </div>
-      ) : (
-        <section className="results-group">
-          <h4>Indexed matches</h4>
-          <ul className="results-group__changes explorer-results">
-            {queryResults.map((component) => (
-              <li key={component.componentGuid}>
-                <strong>{component.componentGuid}</strong>
-                <span>
-                  {component._model ?? "unknown model"} · {component.componentType ?? "Unknown type"}
-                </span>
-                <code>{summarizeComponent(component)}</code>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-    </section>
+        {queryError ? (
+          <div className="results-empty">
+            <h3>Backend explorer unavailable</h3>
+            <p>{queryError}</p>
+          </div>
+        ) : !selectedQueryVersion ? (
+          <div className="results-empty">
+            <h3>No indexed versions</h3>
+            <p>The backend did not return any versioned snapshots to explore.</p>
+          </div>
+        ) : !hasActiveFilters ? (
+          <div className="results-empty">
+            <h3>Pick a type filter</h3>
+            <p>Select a type to query the backend index for this version.</p>
+          </div>
+        ) : queryResults.length === 0 && !queryLoading ? (
+          <div className="results-empty">
+            <h3>No indexed matches</h3>
+            <p>Try a different type for this indexed backend version.</p>
+          </div>
+        ) : (
+          <section className="results-group">
+            <h4>Indexed matches</h4>
+            <ul className="results-group__changes explorer-results">
+              {queryResults.map((component) => (
+                <li key={component.componentGuid}>
+                  <strong>{component.componentGuid}</strong>
+                  <span>
+                    {component._model ?? "unknown model"} · {component.componentType ?? "Unknown type"}
+                  </span>
+                  <code>{summarizeComponent(component)}</code>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </section>
+    </details>
   );
 }
 
 export function PropertiesPanel() {
   useVersionedQueryExplorer();
 
-  const diffHighlightEnabled = useAppStore((state) => state.diffHighlightEnabled);
-  const diffGhostNonAffectedEnabled = useAppStore((state) => state.diffGhostNonAffectedEnabled);
   const diffResult = useAppStore((state) => state.diffResult);
-  const setDiffHighlightEnabled = useAppStore((state) => state.setDiffHighlightEnabled);
-  const setDiffGhostNonAffectedEnabled = useAppStore((state) => state.setDiffGhostNonAffectedEnabled);
-  const added = diffResult ? Array.from(diffResult.added).sort() : [];
-  const changed = diffResult ? Array.from(diffResult.changed).sort() : [];
-  const deleted = diffResult ? Array.from(diffResult.deleted).sort() : [];
-  const changeEntries = diffResult ? Object.entries(diffResult.changesById) : [];
-  const diffControlsEnabled = Boolean(diffResult) && diffHighlightEnabled;
+  const selectedEntity = useAppStore((state) => state.selectedEntity);
+  const currentStore = useAppStore((state) => state.currentStore);
+  const viewerApi = useAppStore((state) => state.viewerApi);
+  const setSelectedExpressId = useAppStore((state) => state.setSelectedExpressId);
+  const impactedChanges = useMemo(() => buildImpactedChanges(diffResult), [diffResult]);
+  const prioritizedChanges = useMemo(() => {
+    const selectedGlobalId = selectedEntity?.globalId ?? null;
+    if (!selectedGlobalId) {
+      return impactedChanges;
+    }
+
+    return impactedChanges.slice().sort((left, right) => {
+      const leftSelected = left.globalId === selectedGlobalId ? -1 : 0;
+      const rightSelected = right.globalId === selectedGlobalId ? -1 : 0;
+      return leftSelected - rightSelected;
+    });
+  }, [impactedChanges, selectedEntity?.globalId]);
+  const [activeChangeId, setActiveChangeId] = useState<string | null>(null);
+  const activeChange =
+    prioritizedChanges.find((item) => item.globalId === activeChangeId) ??
+    prioritizedChanges[0] ??
+    null;
+
+  useEffect(() => {
+    const selectedGlobalId = selectedEntity?.globalId ?? null;
+    if (selectedGlobalId && prioritizedChanges.some((item) => item.globalId === selectedGlobalId)) {
+      setActiveChangeId(selectedGlobalId);
+      return;
+    }
+
+    if (!activeChangeId || !prioritizedChanges.some((item) => item.globalId === activeChangeId)) {
+      setActiveChangeId(prioritizedChanges[0]?.globalId ?? null);
+    }
+  }, [activeChangeId, prioritizedChanges, selectedEntity?.globalId]);
+
+  async function handleSelectChange(globalId: string) {
+    setActiveChangeId(globalId);
+
+    if (!currentStore || !viewerApi) {
+      return;
+    }
+
+    const [expressId] = mapGuidsToExpressIds(currentStore, [globalId]);
+    if (typeof expressId !== "number") {
+      return;
+    }
+
+    setSelectedExpressId(expressId);
+    await viewerApi.frameExpressId(expressId);
+    viewerApi.requestRender();
+  }
 
   return (
     <aside className="panel panel--properties">
       <div className="panel__eyebrow">Results</div>
 
-      <label className="results-toggle">
-        <span>Diff coloring</span>
-        <input
-          type="checkbox"
-          checked={diffHighlightEnabled}
-          onChange={(event) => setDiffHighlightEnabled(event.target.checked)}
-        />
-      </label>
-
-      <label className="results-toggle">
-        <span>Ghost non-affected</span>
-        <input
-          type="checkbox"
-          checked={diffGhostNonAffectedEnabled}
-          disabled={!diffControlsEnabled}
-          onChange={(event) => setDiffGhostNonAffectedEnabled(event.target.checked)}
-        />
-      </label>
-
-      <div className="diff-summary">
-        <div className="diff-summary__item">
-          <span>Added</span>
-          <strong>{diffResult?.added.size ?? 0}</strong>
-        </div>
-        <div className="diff-summary__item">
-          <span>Changed</span>
-          <strong>{diffResult?.changed.size ?? 0}</strong>
-        </div>
-        <div className="diff-summary__item">
-          <span>Deleted</span>
-          <strong>{diffResult?.deleted.size ?? 0}</strong>
-        </div>
-      </div>
-
       {!diffResult ? (
-        <div className="results-empty">
-          <h3>No diff data yet</h3>
-          <p>
-            The current tracked model either has no previous revision in the selected GitHub repo or is
-            not an IFC revision the viewer can load.
-          </p>
+        <div className="results-stack">
+          <div className="results-empty">
+            <h3>No diff data yet</h3>
+            <p>
+              The current tracked model either has no previous revision in the selected GitHub repo or is
+              not an IFC revision the viewer can load.
+            </p>
+          </div>
+          <QueryExplorer />
         </div>
       ) : (
-        <div className="results-detail">
-          <header className="results-detail__header">
-            <h3>Compared revisions</h3>
-            <p>
-              Base <strong>{diffResult.baseSha.slice(0, 7)}</strong> to current{" "}
-              <strong>{diffResult.compareSha.slice(0, 7)}</strong>
-            </p>
-          </header>
+        <div className="results-stack">
+          <ChangeSummary diffResult={diffResult} impactedCount={impactedChanges.length} />
 
-          <section className="results-group">
-            <h4>Changed fields</h4>
-            {changeEntries.length === 0 ? (
-              <p className="results-group__empty">No changed fields reported.</p>
-            ) : (
-              <ul className="results-group__changes">
-                {changeEntries.map(([guid, change]) => (
-                  <li key={guid}>
-                    <strong>{guid}</strong>
-                    <span>{change.type}</span>
-                    <code>{change.fields.join(", ") || "No field list"}</code>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <ImpactedComponentsList
+            items={prioritizedChanges}
+            activeId={activeChange?.globalId ?? null}
+            onSelect={(globalId) => void handleSelectChange(globalId)}
+          />
 
-          <DiffDetailList />
-          <ResultList title="Added IDs" items={added} />
-          <ResultList title="Changed IDs" items={changed} />
-          <ResultList title="Deleted IDs" items={deleted} />
+          <SelectedChangeDetails item={activeChange} />
+
+          <QueryExplorer />
         </div>
       )}
-
-      <QueryExplorer />
     </aside>
   );
 }

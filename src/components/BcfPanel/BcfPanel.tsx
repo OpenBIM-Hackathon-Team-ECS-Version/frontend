@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 
 import {
   cloneProject,
@@ -11,6 +12,7 @@ import {
   getGuidForExpressId,
   importBcfProject,
   listTopics,
+  mapGuidsToExpressIds,
   parseTopicMetadata,
   readViewpointState,
   stripTopicMetadata,
@@ -18,13 +20,15 @@ import {
   withTopicMetadata,
   appendComment,
   appendViewpoint,
-  mapGuidsToExpressIds,
 } from "../../lib/bcf";
-import { fetchRepoFileBuffer } from "../../lib/github";
+import { fetchRepoFileBuffer, getFileCommitHistory } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
-import type { BCFViewpoint, BcfPanelTopicDraft } from "../../types/bcf";
+import type { BCFTopic, BCFViewpoint, BcfPanelTopicDraft } from "../../types/bcf";
 
 const DEFAULT_AUTHOR = "reviewer@hackporto.local";
+const TOPIC_STATUS_OPTIONS = ["Open", "In progress", "Resolved", "Closed"];
+const TOPIC_TYPE_OPTIONS = ["Issue", "Clash", "Question", "Request", "Task"];
+const PRIORITY_OPTIONS = ["Low", "Medium", "High", "Critical"];
 
 const EMPTY_DRAFT: BcfPanelTopicDraft = {
   title: "",
@@ -35,6 +39,9 @@ const EMPTY_DRAFT: BcfPanelTopicDraft = {
   assignedTo: "",
   labels: "",
 };
+
+type BcfPanelMode = "browse" | "create";
+type BcfDetailTab = "overview" | "edit" | "activity";
 
 export function BcfPanel() {
   const repo = useAppStore((state) => state.repo);
@@ -65,12 +72,17 @@ export function BcfPanel() {
   const setSelectedExpressId = useAppStore((state) => state.setSelectedExpressId);
   const setSelectedEntity = useAppStore((state) => state.setSelectedEntity);
 
+  const [panelMode, setPanelMode] = useState<BcfPanelMode>("browse");
+  const [detailTab, setDetailTab] = useState<BcfDetailTab>("overview");
   const [draft, setDraft] = useState<BcfPanelTopicDraft>(EMPTY_DRAFT);
-  const [newTopicTitle, setNewTopicTitle] = useState("");
+  const [createDraft, setCreateDraft] = useState<BcfPanelTopicDraft>(EMPTY_DRAFT);
   const [commentDraft, setCommentDraft] = useState("");
   const [selectedRepoBcfPath, setSelectedRepoBcfPath] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [resolvedBcfVersionSha, setResolvedBcfVersionSha] = useState<string | null>(null);
 
   const repoBcfFiles = useMemo(
     () => availableBcfFiles.slice().sort((left, right) => right.path.localeCompare(left.path)),
@@ -84,27 +96,57 @@ export function BcfPanel() {
   );
   const selectedViewpoint =
     selectedTopic?.viewpoints.find((viewpoint) => viewpoint.guid === selectedViewpointGuid) ?? null;
+  const openTopicCount = useMemo(
+    () => topics.filter((topic) => (topic.topicStatus ?? "Open").toLowerCase() !== "resolved").length,
+    [topics],
+  );
+  const selectedTopicDirty = useMemo(
+    () => (selectedTopic ? isSameDraft(draft, topicToDraft(selectedTopic)) === false : false),
+    [draft, selectedTopic],
+  );
+  const canCreateTopic = Boolean(createDraft.title.trim() && bcfProject);
+  const createDraftDirty = useMemo(() => !isSameDraft(createDraft, EMPTY_DRAFT), [createDraft]);
 
   useEffect(() => {
     if (!selectedTopic) {
       setDraft(EMPTY_DRAFT);
+      setCommentDraft("");
       return;
     }
 
-    setDraft({
-      title: selectedTopic.title,
-      description: stripTopicMetadata(selectedTopic.description),
-      topicStatus: selectedTopic.topicStatus ?? "Open",
-      topicType: selectedTopic.topicType ?? "Issue",
-      priority: selectedTopic.priority ?? "Medium",
-      assignedTo: selectedTopic.assignedTo ?? "",
-      labels: selectedTopic.labels?.join(", ") ?? "",
-    });
+    setDraft(topicToDraft(selectedTopic));
+    setCommentDraft("");
   }, [selectedTopic]);
+
+  useEffect(() => {
+    if (selectedTopic) {
+      setPanelMode("browse");
+    }
+  }, [selectedTopic]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (menuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setMenuOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [menuOpen]);
 
   useEffect(() => {
     if (repoBcfFiles.length === 0) {
       setSelectedRepoBcfPath(null);
+      setResolvedBcfVersionSha(null);
       setBcfProject(null, null);
       return;
     }
@@ -126,17 +168,35 @@ export function BcfPanel() {
     }
 
     const selectedRepoBcfPathRef = selectedRepoBcfFile.path;
-    const selectedRepoBcfShaRef = selectedRepoBcfFile.sha;
+    const activeShaRef = activeSha;
     let cancelled = false;
 
     async function loadRepoBcf() {
-      setBusyLabel("Loading BCF from GitHub");
+      setBusyLabel("Loading BCF for selected version");
       setError(null);
 
       try {
+        const history = await getFileCommitHistory(
+          repoRef,
+          activeShaRef,
+          selectedRepoBcfPathRef,
+          authToken,
+          1,
+        );
+        const historicalBcfCommit = history[0] ?? null;
+        if (cancelled) {
+          return;
+        }
+
+        if (!historicalBcfCommit) {
+          setResolvedBcfVersionSha(null);
+          setBcfProject(null, selectedRepoBcfPathRef);
+          return;
+        }
+
         const buffer = await fetchRepoFileBuffer(
           repoRef,
-          selectedRepoBcfShaRef,
+          historicalBcfCommit.sha,
           selectedRepoBcfPathRef,
           authToken,
         );
@@ -145,12 +205,14 @@ export function BcfPanel() {
           return;
         }
 
+        setResolvedBcfVersionSha(historicalBcfCommit.sha);
         setBcfProject(project, selectedRepoBcfPathRef);
       } catch (caughtError) {
         if (cancelled) {
           return;
         }
 
+        setResolvedBcfVersionSha(null);
         setError(caughtError instanceof Error ? caughtError.message : "Failed to load BCF from GitHub.");
       } finally {
         if (!cancelled) {
@@ -196,6 +258,7 @@ export function BcfPanel() {
         : "review.bcfzip";
       downloadBlob(blob, filename);
       markBcfDirty(false);
+      setMenuOpen(false);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Failed to export BCF.");
     } finally {
@@ -206,18 +269,34 @@ export function BcfPanel() {
   const handleCreateProject = () => {
     const projectName = repo ? `${repo.owner}/${repo.name} review` : "HackPorto Review";
     setBcfProject(createEmptyBcfProject(projectName), "review.bcfzip");
+    setSelectedTopicGuid(null);
+    setSelectedViewpointGuid(null);
+    setCreateDraft(EMPTY_DRAFT);
+    setPanelMode("create");
+    setDetailTab("overview");
+    setMenuOpen(false);
     setError(null);
   };
 
   const handleCreateTopic = () => {
-    const trimmedTitle = newTopicTitle.trim();
-    if (!trimmedTitle || !bcfProject) {
+    if (!bcfProject) {
+      return;
+    }
+
+    const trimmedTitle = createDraft.title.trim();
+    if (!trimmedTitle) {
       return;
     }
 
     const topic = createTopicForCurrentModel({
       title: trimmedTitle,
+      description: createDraft.description.trim() || undefined,
       author: DEFAULT_AUTHOR,
+      topicStatus: createDraft.topicStatus,
+      topicType: createDraft.topicType,
+      priority: createDraft.priority,
+      assignedTo: createDraft.assignedTo.trim() || undefined,
+      labels: parseLabels(createDraft.labels),
       metadata: {
         repoName: repo?.name ?? null,
         repoOwner: repo?.owner ?? null,
@@ -230,7 +309,10 @@ export function BcfPanel() {
       project.topics.set(topic.guid, topic);
     });
     setSelectedTopicGuid(topic.guid);
-    setNewTopicTitle("");
+    setSelectedViewpointGuid(null);
+    setCreateDraft(EMPTY_DRAFT);
+    setPanelMode("browse");
+    setDetailTab("overview");
   };
 
   const handleSaveTopic = () => {
@@ -256,10 +338,7 @@ export function BcfPanel() {
         topicType: draft.topicType.trim() || undefined,
         priority: draft.priority.trim() || undefined,
         assignedTo: draft.assignedTo.trim() || undefined,
-        labels: draft.labels
-          .split(",")
-          .map((label) => label.trim())
-          .filter(Boolean),
+        labels: parseLabels(draft.labels),
         modifiedDate: new Date().toISOString(),
         modifiedAuthor: DEFAULT_AUTHOR,
       });
@@ -390,216 +469,468 @@ export function BcfPanel() {
         {repoBcfFiles.length === 0
           ? "No .bcf or .bcfzip files found in the repo branches we scanned."
           : bcfProject
-          ? `${topics.length} topic${topics.length === 1 ? "" : "s"}${bcfDirty ? " · unsaved changes" : ""}`
-          : "Loading BCF issues from GitHub."}
+            ? `${topics.length} topic${topics.length === 1 ? "" : "s"} · ${openTopicCount} active · BCF @ ${resolvedBcfVersionSha?.slice(0, 7) ?? "unknown"}${bcfDirty ? " · unsaved changes" : ""}`
+            : resolvedBcfVersionSha === null && activeSha
+              ? `No BCF snapshot exists yet for model version ${activeSha.slice(0, 7)}.`
+              : "Loading BCF issues from GitHub."}
       </div>
 
-      <div className="bcf-toolbar">
-        <button type="button" className="bcf-button" onClick={handleCreateProject}>
-          New project
-        </button>
-        <button type="button" className="bcf-button bcf-button--accent" onClick={() => void handleExport()} disabled={!bcfProject}>
-          Export
-        </button>
-      </div>
+      <div className="bcf-shell">
+        <aside className="bcf-sidebar">
+          <div className="bcf-sidebar__section">
+            <div className="bcf-control-bar">
+              <div className="bcf-control-bar__group bcf-control-bar__group--project">
+                <strong>{bcfSourceName ?? "No BCF loaded"}</strong>
+                <span className="bcf-control-bar__meta">
+                  {resolvedBcfVersionSha ? `Snapshot ${resolvedBcfVersionSha.slice(0, 7)}` : "No matching BCF snapshot"}
+                </span>
+              </div>
 
-      <div className="bcf-project-meta">
-        <span>{bcfSourceName ?? "No BCF loaded from repo"}</span>
-        <span>{busyLabel ?? (bcfDirty ? "Dirty" : "Saved")}</span>
-      </div>
-
-      {error ? <div className="viewer__message viewer__message--error">{error}</div> : null}
-
-      {repoBcfFiles.length > 0 ? (
-        <div className="bcf-repo-files">
-          {repoBcfFiles.map((file) => (
-            <button
-              key={`${file.branch}:${file.path}`}
-              type="button"
-              className={`bcf-repo-file ${file.path === selectedRepoBcfPath ? "is-active" : ""}`}
-              onClick={() => setSelectedRepoBcfPath(file.path)}
-              title={`${file.branch} @ ${file.sha.slice(0, 7)}`}
-            >
-              {file.path}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {bcfProject ? (
-        <div className="bcf-layout">
-          <section className="bcf-column">
-            <div className="bcf-create-row">
-              <input
-                value={newTopicTitle}
-                onChange={(event) => setNewTopicTitle(event.target.value)}
-                placeholder="Create a new issue topic"
-              />
-              <button type="button" className="bcf-button" onClick={handleCreateTopic}>
-                Add
-              </button>
-            </div>
-
-            <div className="bcf-topic-list">
-              {topics.map((topic) => (
+              <div className="bcf-mode-tabs" role="tablist" aria-label="BCF workflows">
                 <button
-                  key={topic.guid}
                   type="button"
-                  className={`bcf-topic-card ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
-                  onClick={() => setSelectedTopicGuid(topic.guid)}
+                  className={`bcf-mode-tab ${panelMode === "browse" ? "is-active" : ""}`}
+                  onClick={() => setPanelMode("browse")}
                 >
-                  <strong>{topic.title}</strong>
-                  <span>
-                    {topic.topicStatus ?? "Open"} · {topic.priority ?? "No priority"}
-                  </span>
-                  <span>
-                    {topic.comments.length} comment{topic.comments.length === 1 ? "" : "s"} ·{" "}
-                    {topic.viewpoints.length} view{topic.viewpoints.length === 1 ? "" : "s"}
-                  </span>
+                  Topics
                 </button>
-              ))}
-            </div>
-          </section>
+                <button
+                  type="button"
+                  className={`bcf-mode-tab ${panelMode === "create" ? "is-active" : ""}`}
+                  onClick={() => setPanelMode("create")}
+                  disabled={!bcfProject}
+                >
+                  New topic
+                </button>
+              </div>
 
-          <section className="bcf-column bcf-column--detail">
-            {selectedTopic ? (
-              <>
-                <div className="bcf-fields">
-                  <label className="field">
-                    <span className="field__label">Title</span>
-                    <input value={draft.title} onChange={(event) => setDraft((state) => ({ ...state, title: event.target.value }))} />
-                  </label>
+              <span className={`bcf-status-pill ${bcfDirty ? "is-dirty" : ""}`}>
+                {busyLabel ?? (bcfDirty ? "Unsaved" : "Saved")}
+              </span>
 
-                  <label className="field">
-                    <span className="field__label">Description</span>
-                    <textarea
-                      rows={5}
-                      value={draft.description}
-                      onChange={(event) => setDraft((state) => ({ ...state, description: event.target.value }))}
-                    />
-                  </label>
-
-                  <div className="bcf-inline-grid">
-                    <label className="field">
-                      <span className="field__label">Status</span>
-                      <input
-                        value={draft.topicStatus}
-                        onChange={(event) => setDraft((state) => ({ ...state, topicStatus: event.target.value }))}
-                      />
-                    </label>
-                    <label className="field">
-                      <span className="field__label">Type</span>
-                      <input
-                        value={draft.topicType}
-                        onChange={(event) => setDraft((state) => ({ ...state, topicType: event.target.value }))}
-                      />
-                    </label>
-                    <label className="field">
-                      <span className="field__label">Priority</span>
-                      <input
-                        value={draft.priority}
-                        onChange={(event) => setDraft((state) => ({ ...state, priority: event.target.value }))}
-                      />
-                    </label>
-                    <label className="field">
-                      <span className="field__label">Assigned to</span>
-                      <input
-                        value={draft.assignedTo}
-                        onChange={(event) => setDraft((state) => ({ ...state, assignedTo: event.target.value }))}
-                      />
-                    </label>
+              <div className="bcf-menu" ref={menuRef}>
+                <button
+                  type="button"
+                  className={`bcf-icon-button ${menuOpen ? "is-active" : ""}`}
+                  aria-label="Open BCF actions"
+                  aria-expanded={menuOpen}
+                  onClick={() => setMenuOpen((open) => !open)}
+                >
+                  •••
+                </button>
+                {menuOpen ? (
+                  <div className="bcf-menu__panel">
+                    <button type="button" className="bcf-menu__item" onClick={handleCreateProject}>
+                      New project
+                    </button>
+                    <button
+                      type="button"
+                      className="bcf-menu__item"
+                      onClick={() => void handleExport()}
+                      disabled={!bcfProject}
+                    >
+                      Export BCF
+                    </button>
                   </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
 
-                  <label className="field">
-                    <span className="field__label">Labels</span>
-                    <input
-                      value={draft.labels}
-                      onChange={(event) => setDraft((state) => ({ ...state, labels: event.target.value }))}
-                      placeholder="coordination, clash, review"
-                    />
-                  </label>
+          <div className="bcf-sidebar__section bcf-sidebar__section--grow">
+            {panelMode === "browse" ? (
+              <>
+                <div className="bcf-list-heading">
+                  <span>{topics.length} total</span>
+                  <span>{openTopicCount} active</span>
                 </div>
 
-                <div className="bcf-topic-actions">
-                  <button type="button" className="bcf-button bcf-button--accent" onClick={handleSaveTopic}>
-                    Save topic
+                <div className="bcf-topic-list">
+                  {topics.length === 0 ? (
+                    <div className="bcf-empty">No topics yet. Use the New topic tab to start a review.</div>
+                  ) : (
+                    topics.map((topic) => {
+                      const metadata = parseTopicMetadata(topic);
+                      return (
+                        <button
+                          key={topic.guid}
+                          type="button"
+                          className={`bcf-topic-card ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                          onClick={() => {
+                            setSelectedTopicGuid(topic.guid);
+                            setDetailTab("overview");
+                          }}
+                        >
+                          <div className="bcf-topic-card__header">
+                            <strong>{topic.title}</strong>
+                            <span className="bcf-topic-card__badge">{topic.priority ?? "No priority"}</span>
+                          </div>
+                          <span>
+                            {topic.topicStatus ?? "Open"} · {topic.topicType ?? "Issue"}
+                          </span>
+                          <span>
+                            {topic.comments.length} comment{topic.comments.length === 1 ? "" : "s"} ·{" "}
+                            {topic.viewpoints.length} view{topic.viewpoints.length === 1 ? "" : "s"}
+                          </span>
+                          <span>{metadata.activePath ?? "No IFC path recorded"}</span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="bcf-create-panel">
+                <div className="bcf-sidebar__label">Create a new issue</div>
+                <TopicForm draft={createDraft} onChange={setCreateDraft} />
+                <div className="bcf-create-panel__actions">
+                  <button
+                    type="button"
+                    className="bcf-button bcf-button--accent"
+                    onClick={handleCreateTopic}
+                    disabled={!canCreateTopic}
+                  >
+                    Create topic
                   </button>
                   <button
                     type="button"
                     className="bcf-button"
-                    onClick={() => void handleCaptureViewpoint()}
-                    disabled={!viewerApi || !currentStore}
+                    onClick={() => {
+                      setCreateDraft(EMPTY_DRAFT);
+                      setPanelMode("browse");
+                    }}
                   >
-                    Capture viewpoint
+                    {createDraftDirty ? "Cancel" : "Back to topics"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <section className="bcf-detail">
+          {error ? <div className="viewer__message viewer__message--error">{error}</div> : null}
+
+          {bcfProject ? (
+            selectedTopic ? (
+              <>
+                <div className="bcf-detail__header">
+                  <div>
+                    <div className="bcf-sidebar__label">Selected topic</div>
+                    <h3>{selectedTopic.title}</h3>
+                    <p>
+                      {selectedTopic.topicStatus ?? "Open"} · {selectedTopic.topicType ?? "Issue"} ·{" "}
+                      {selectedTopic.priority ?? "No priority"}
+                    </p>
+                  </div>
+                  <div className="bcf-detail__actions">
+                    <button
+                      type="button"
+                      className="bcf-button"
+                      onClick={() => {
+                        setPanelMode("create");
+                        setCreateDraft({
+                          ...EMPTY_DRAFT,
+                          labels: draft.labels,
+                        });
+                      }}
+                    >
+                      Clone into new
+                    </button>
+                    <button
+                      type="button"
+                      className="bcf-button"
+                      onClick={() => void handleCaptureViewpoint()}
+                      disabled={!viewerApi || !currentStore}
+                    >
+                      Capture viewpoint
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bcf-detail-tabs" role="tablist" aria-label="Topic detail sections">
+                  <button
+                    type="button"
+                    className={`bcf-detail-tab ${detailTab === "overview" ? "is-active" : ""}`}
+                    onClick={() => setDetailTab("overview")}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    type="button"
+                    className={`bcf-detail-tab ${detailTab === "edit" ? "is-active" : ""}`}
+                    onClick={() => setDetailTab("edit")}
+                  >
+                    Edit
+                    {selectedTopicDirty ? <span className="bcf-detail-tab__dot" aria-hidden="true" /> : null}
+                  </button>
+                  <button
+                    type="button"
+                    className={`bcf-detail-tab ${detailTab === "activity" ? "is-active" : ""}`}
+                    onClick={() => setDetailTab("activity")}
+                  >
+                    Activity
                   </button>
                 </div>
 
-                <div className="bcf-meta-block">
-                  <strong>Model context</strong>
-                  <span>{selectedMetadata?.repoOwner && selectedMetadata.repoName ? `${selectedMetadata.repoOwner}/${selectedMetadata.repoName}` : "No repo metadata"}</span>
-                  <span>{selectedMetadata?.activePath ?? "No IFC path recorded"}</span>
-                  <span>{selectedMetadata?.activeSha ? `Commit ${selectedMetadata.activeSha.slice(0, 7)}` : "No commit recorded"}</span>
-                </div>
+                {detailTab === "overview" ? (
+                  <div className="bcf-detail-stack">
+                    <div className="bcf-overview-grid">
+                      <div className="bcf-meta-block">
+                        <strong>Summary</strong>
+                        <span>{stripTopicMetadata(selectedTopic.description) || "No description yet."}</span>
+                      </div>
+                      <div className="bcf-meta-block">
+                        <strong>Model context</strong>
+                        <span>
+                          {selectedMetadata?.repoOwner && selectedMetadata.repoName
+                            ? `${selectedMetadata.repoOwner}/${selectedMetadata.repoName}`
+                            : "No repo metadata"}
+                        </span>
+                        <span>{selectedMetadata?.activePath ?? "No IFC path recorded"}</span>
+                        <span>
+                          {selectedMetadata?.activeSha
+                            ? `Commit ${selectedMetadata.activeSha.slice(0, 7)}`
+                            : "No commit recorded"}
+                        </span>
+                      </div>
+                      <div className="bcf-meta-block">
+                        <strong>Ownership</strong>
+                        <span>{selectedTopic.assignedTo ?? "Unassigned"}</span>
+                        <span>
+                          {(selectedTopic.labels ?? []).length > 0
+                            ? selectedTopic.labels?.join(", ")
+                            : "No labels"}
+                        </span>
+                      </div>
+                      <div className="bcf-meta-block">
+                        <strong>Activity</strong>
+                        <span>
+                          {selectedTopic.comments.length} comment{selectedTopic.comments.length === 1 ? "" : "s"}
+                        </span>
+                        <span>
+                          {selectedTopic.viewpoints.length} viewpoint
+                          {selectedTopic.viewpoints.length === 1 ? "" : "s"}
+                        </span>
+                        <span>
+                          Updated{" "}
+                          {new Date(selectedTopic.modifiedDate ?? selectedTopic.creationDate).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
-                <div className="bcf-viewpoints">
-                  <div className="bcf-section-title">Viewpoints</div>
-                  {selectedTopic.viewpoints.length === 0 ? (
-                    <div className="bcf-empty">No viewpoints captured yet.</div>
-                  ) : (
-                    selectedTopic.viewpoints.map((viewpoint) => (
-                      <button
-                        key={viewpoint.guid}
-                        type="button"
-                        className={`bcf-viewpoint-card ${viewpoint.guid === selectedViewpoint?.guid ? "is-active" : ""}`}
-                        onClick={() => void handleApplyViewpoint(viewpoint)}
-                      >
-                        <strong>{viewpoint.guid.slice(0, 8)}</strong>
-                        <span>{viewpoint.snapshot ? "Snapshot attached" : "Camera-only viewpoint"}</span>
+                {detailTab === "edit" ? (
+                  <div className="bcf-detail-stack">
+                    <TopicForm draft={draft} onChange={setDraft} />
+                    <div className="bcf-topic-actions">
+                      <button type="button" className="bcf-button bcf-button--accent" onClick={handleSaveTopic}>
+                        Save topic
                       </button>
-                    ))
-                  )}
-                </div>
+                      <button
+                        type="button"
+                        className="bcf-button"
+                        onClick={() => selectedTopic && setDraft(topicToDraft(selectedTopic))}
+                        disabled={!selectedTopicDirty}
+                      >
+                        Reset changes
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
-                <div className="bcf-comments">
-                  <div className="bcf-section-title">Comments</div>
-                  {selectedTopic.comments.length === 0 ? (
-                    <div className="bcf-empty">No comments yet.</div>
-                  ) : (
-                    selectedTopic.comments.map((comment) => (
-                      <article key={comment.guid} className="bcf-comment">
-                        <strong>{comment.author}</strong>
-                        <span>{new Date(comment.date).toLocaleString()}</span>
-                        <p>{comment.comment}</p>
-                      </article>
-                    ))
-                  )}
+                {detailTab === "activity" ? (
+                  <div className="bcf-detail-stack">
+                    <div className="bcf-viewpoints">
+                      <div className="bcf-section-title">Viewpoints</div>
+                      {selectedTopic.viewpoints.length === 0 ? (
+                        <div className="bcf-empty">No viewpoints captured yet.</div>
+                      ) : (
+                        selectedTopic.viewpoints.map((viewpoint) => (
+                          <button
+                            key={viewpoint.guid}
+                            type="button"
+                            className={`bcf-viewpoint-card ${viewpoint.guid === selectedViewpoint?.guid ? "is-active" : ""}`}
+                            onClick={() => void handleApplyViewpoint(viewpoint)}
+                          >
+                            <strong>{viewpoint.guid.slice(0, 8)}</strong>
+                            <span>{viewpoint.snapshot ? "Snapshot attached" : "Camera-only viewpoint"}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
 
-                  <label className="field">
-                    <span className="field__label">Add comment</span>
-                    <textarea
-                      rows={3}
-                      value={commentDraft}
-                      onChange={(event) => setCommentDraft(event.target.value)}
-                    />
-                  </label>
-                  <button type="button" className="bcf-button" onClick={handleAddComment}>
-                    Add comment
-                  </button>
-                </div>
+                    <div className="bcf-comments">
+                      <div className="bcf-section-title">Comments</div>
+                      {selectedTopic.comments.length === 0 ? (
+                        <div className="bcf-empty">No comments yet.</div>
+                      ) : (
+                        selectedTopic.comments.map((comment) => (
+                          <article key={comment.guid} className="bcf-comment">
+                            <strong>{comment.author}</strong>
+                            <span>{new Date(comment.date).toLocaleString()}</span>
+                            <p>{comment.comment}</p>
+                          </article>
+                        ))
+                      )}
+
+                      <label className="field">
+                        <span className="field__label">Add comment</span>
+                        <textarea
+                          rows={4}
+                          value={commentDraft}
+                          onChange={(event) => setCommentDraft(event.target.value)}
+                          placeholder="Document the decision, missing information, or next action."
+                        />
+                      </label>
+                      <button type="button" className="bcf-button" onClick={handleAddComment}>
+                        Add comment
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </>
             ) : (
-              <div className="bcf-empty">Create or select a topic to start reviewing this model.</div>
-            )}
-          </section>
-        </div>
-      ) : (
-        <div className="bcf-empty bcf-empty--standalone">
-          {repoBcfFiles.length > 0
-            ? "Select a repository BCF file to inspect its issues."
-            : "Add a .bcf or .bcfzip file to the repo to inspect issues here."}
-        </div>
-      )}
+              <div className="bcf-empty bcf-empty--standalone">
+                Select a topic from the list to review its details, or create a new one from the New topic tab.
+              </div>
+            )
+          ) : (
+            <div className="bcf-empty bcf-empty--standalone">
+              {repoBcfFiles.length > 0
+                ? "Select a repository BCF file to inspect its issues."
+                : "Add a .bcf or .bcfzip file to the repo to inspect issues here."}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
+  );
+}
+
+function TopicForm({
+  draft,
+  onChange,
+}: {
+  draft: BcfPanelTopicDraft;
+  onChange: Dispatch<SetStateAction<BcfPanelTopicDraft>>;
+}) {
+  return (
+    <div className="bcf-fields">
+      <label className="field">
+        <span className="field__label">Title</span>
+        <input
+          value={draft.title}
+          onChange={(event) => onChange((state) => ({ ...state, title: event.target.value }))}
+          placeholder="Describe the issue clearly"
+        />
+      </label>
+
+      <label className="field">
+        <span className="field__label">Description</span>
+        <textarea
+          rows={5}
+          value={draft.description}
+          onChange={(event) => onChange((state) => ({ ...state, description: event.target.value }))}
+          placeholder="What is wrong, where is it, and what should happen next?"
+        />
+      </label>
+
+      <div className="bcf-inline-grid">
+        <SelectField
+          label="Status"
+          value={draft.topicStatus}
+          options={TOPIC_STATUS_OPTIONS}
+          onChange={(value) => onChange((state) => ({ ...state, topicStatus: value }))}
+        />
+        <SelectField
+          label="Type"
+          value={draft.topicType}
+          options={TOPIC_TYPE_OPTIONS}
+          onChange={(value) => onChange((state) => ({ ...state, topicType: value }))}
+        />
+        <SelectField
+          label="Priority"
+          value={draft.priority}
+          options={PRIORITY_OPTIONS}
+          onChange={(value) => onChange((state) => ({ ...state, priority: value }))}
+        />
+        <label className="field">
+          <span className="field__label">Assigned to</span>
+          <input
+            value={draft.assignedTo}
+            onChange={(event) => onChange((state) => ({ ...state, assignedTo: event.target.value }))}
+            placeholder="Reviewer or discipline lead"
+          />
+        </label>
+      </div>
+
+      <label className="field">
+        <span className="field__label">Labels</span>
+        <input
+          value={draft.labels}
+          onChange={(event) => onChange((state) => ({ ...state, labels: event.target.value }))}
+          placeholder="coordination, clash, structure"
+        />
+      </label>
+    </div>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="field">
+      <span className="field__label">{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function topicToDraft(topic: BCFTopic): BcfPanelTopicDraft {
+  return {
+    title: topic.title,
+    description: stripTopicMetadata(topic.description),
+    topicStatus: topic.topicStatus ?? "Open",
+    topicType: topic.topicType ?? "Issue",
+    priority: topic.priority ?? "Medium",
+    assignedTo: topic.assignedTo ?? "",
+    labels: topic.labels?.join(", ") ?? "",
+  };
+}
+
+function parseLabels(labels: string) {
+  return labels
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean);
+}
+
+function isSameDraft(left: BcfPanelTopicDraft, right: BcfPanelTopicDraft) {
+  return (
+    left.title === right.title &&
+    left.description === right.description &&
+    left.topicStatus === right.topicStatus &&
+    left.topicType === right.topicType &&
+    left.priority === right.priority &&
+    left.assignedTo === right.assignedTo &&
+    left.labels === right.labels
   );
 }
 
