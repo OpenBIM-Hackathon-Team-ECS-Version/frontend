@@ -437,10 +437,10 @@ export function ViewerVersionTimeline() {
                     : "Version"}
               </span>
               <strong>{commit.shortSha}</strong>
-              <p>{commit.message.split("\n")[0]}</p>
               <span className="version-stop__meta">
                 {formatCommitTimestamp(commit.authoredAt)}
               </span>
+              <p>{commit.message.split("\n")[0]}</p>
               <span className="version-stop__meta version-stop__meta--secondary">
                 {commit.authorName} · {commit.relativeTime}
               </span>
