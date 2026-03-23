@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { importBcfProject, listTopics } from "../../lib/bcf";
 import {
@@ -6,10 +6,10 @@ import {
   buildTopicLifecycle,
   getTopicAnchorTimestamp,
   isResolvedStatus,
-  resolveTopicCommitSha,
   type TopicHistoryEntry,
 } from "../../lib/bcfTimeline";
 import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
+import { validateFile, fetchValidationBcf, isAllPassing } from "../../lib/validation";
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
 import type { BCFProject } from "../../types/bcf";
@@ -37,6 +37,12 @@ export function ViewerVersionTimeline() {
   const setActiveSha = useAppStore((state) => state.setActiveSha);
   const setSelectedTopicGuid = useAppStore((state) => state.setSelectedTopicGuid);
   const setSelectedViewpointGuid = useAppStore((state) => state.setSelectedViewpointGuid);
+  const validationResults = useAppStore((state) => state.validationResults);
+  const validatingCommitSha = useAppStore((state) => state.validatingCommitSha);
+  const setValidationResult = useAppStore((state) => state.setValidationResult);
+  const setValidatingCommitSha = useAppStore((state) => state.setValidatingCommitSha);
+  const setValidationBcf = useAppStore((state) => state.setValidationBcf);
+  const setValidationBcfActive = useAppStore((state) => state.setValidationBcfActive);
 
   const [versions, setVersions] = useState<GitCommit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -301,6 +307,32 @@ export function ViewerVersionTimeline() {
     setPage((currentPage) => (currentPage === nextPage ? currentPage : nextPage));
   }, [pageSize, versions, visibleVersionSha]);
 
+  const handleValidate = useCallback(
+    async (commitSha: string) => {
+      if (!repo || !activePath || validatingCommitSha) {
+        return;
+      }
+
+      setValidatingCommitSha(commitSha);
+
+      try {
+        const result = await validateFile(repo, commitSha, activePath);
+        setValidationResult(commitSha, result);
+
+        if (!isAllPassing(result)) {
+          const bcfBuffer = await fetchValidationBcf(repo, commitSha, activePath);
+          const bcfProject = await importBcfProject(bcfBuffer);
+          setValidationBcf(bcfProject, `Validation @ ${commitSha.slice(0, 7)}`);
+        }
+      } catch (error) {
+        console.error("Validation failed:", error);
+      } finally {
+        setValidatingCommitSha(null);
+      }
+    },
+    [repo, activePath, validatingCommitSha, setValidatingCommitSha, setValidationResult, setValidationBcf],
+  );
+
   useEffect(() => {
     if (!selectedTopicGuid) {
       return;
@@ -419,32 +451,89 @@ export function ViewerVersionTimeline() {
             })}
           </div>
 
-          {visibleVersions.map((commit, index) => (
-            <button
-              key={commit.sha}
-              type="button"
-              className={`version-stop ${commit.sha === visibleVersionSha ? "is-active" : ""}`}
-              onClick={() => setActiveSha(commit.sha)}
-              title={`${commit.shortSha} — ${commit.message.split("\n")[0]} — ${formatCommitTimestamp(commit.authoredAt)}`}
-              aria-label={`Show version ${commit.shortSha}`}
-            >
-              <span className="version-stop__badge">
-                {clampedPage === 0 && index === 0
-                  ? "Start"
-                  : clampedPage === totalPages - 1 && index === visibleVersions.length - 1
-                    ? "Latest"
-                    : "Version"}
-              </span>
-              <strong>{formatCommitTimestamp(commit.authoredAt)}</strong>
-              <span className="version-stop__meta">
-                {commit.shortSha}
-              </span>
-              <p>{commit.message.split("\n")[0]}</p>
-              <span className="version-stop__meta version-stop__meta--secondary">
-                {commit.authorName} · {commit.relativeTime}
-              </span>
-            </button>
-          ))}
+          {visibleVersions.map((commit, index) => {
+            const validationResult = validationResults.get(commit.sha) ?? null;
+            const isValidating = validatingCommitSha === commit.sha;
+
+            return (
+              <button
+                key={commit.sha}
+                type="button"
+                className={`version-stop ${commit.sha === visibleVersionSha ? "is-active" : ""}`}
+                onClick={() => setActiveSha(commit.sha)}
+                title={`${commit.shortSha} — ${commit.message.split("\n")[0]} — ${formatCommitTimestamp(commit.authoredAt)}`}
+                aria-label={`Show version ${commit.shortSha}`}
+              >
+                <span className="version-stop__top-row">
+                  <span className="version-stop__badge">
+                    {clampedPage === 0 && index === 0
+                      ? "Start"
+                      : clampedPage === totalPages - 1 && index === visibleVersions.length - 1
+                        ? "Latest"
+                        : "Version"}
+                  </span>
+                  {validationResult ? (
+                    <span
+                      className={`version-stop__validate-btn version-stop__validate-btn--result`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setValidationBcfActive(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.stopPropagation();
+                          setValidationBcfActive(true);
+                        }
+                      }}
+                      title={isAllPassing(validationResult) ? "All checks passed — view in BCF panel" : "Checks failed — view in BCF panel"}
+                    >
+                      <span
+                        className={`version-stop__validation-dot ${isAllPassing(validationResult) ? "version-stop__validation-dot--pass" : "version-stop__validation-dot--fail"}`}
+                      />
+                    </span>
+                  ) : (
+                    <span
+                      className="version-stop__validate-btn"
+                      role="button"
+                      tabIndex={0}
+                      aria-disabled={isValidating || !activePath}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!isValidating && activePath) {
+                          void handleValidate(commit.sha);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.stopPropagation();
+                          if (!isValidating && activePath) {
+                            void handleValidate(commit.sha);
+                          }
+                        }
+                      }}
+                      title={`Validate ${commit.shortSha}`}
+                    >
+                      {isValidating ? (
+                        <span className="version-stop__spinner" />
+                      ) : (
+                        "Validate"
+                      )}
+                    </span>
+                  )}
+                </span>
+                <strong>{formatCommitTimestamp(commit.authoredAt)}</strong>
+                <span className="version-stop__meta">
+                  {commit.shortSha}
+                </span>
+                <p>{commit.message.split("\n")[0]}</p>
+                <span className="version-stop__meta version-stop__meta--secondary">
+                  {commit.authorName} · {commit.relativeTime}
+                </span>
+              </button>
+            );
+          })}
         </div>
       ) : (
         <div className="version-strip__empty">

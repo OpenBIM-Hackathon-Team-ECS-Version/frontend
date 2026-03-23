@@ -1831,6 +1831,113 @@ button {
   color: color-mix(in srgb, var(--text-muted) 88%, transparent);
 }
 
+.version-stop__top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 6px;
+}
+
+.version-stop__validate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-sunken);
+  color: var(--text-soft);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.version-stop__validate-btn:hover:not([aria-disabled="true"]) {
+  background: var(--info-soft);
+  border-color: var(--info-border-strong);
+  color: var(--info);
+}
+
+.version-stop__validate-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.version-stop__spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--info);
+  border-radius: 50%;
+  animation: validation-spin 0.6s linear infinite;
+}
+
+@keyframes validation-spin {
+  to { transform: rotate(360deg); }
+}
+
+.version-stop__validation-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.version-stop__validation-dot--pass {
+  background: var(--resolved, #22c55e);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--resolved, #22c55e) 50%, transparent);
+}
+
+.version-stop__validation-dot--fail {
+  background: var(--warn, #ef4444);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--warn, #ef4444) 50%, transparent);
+}
+
+.bcf-source-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px 6px;
+}
+
+.bcf-source-tab {
+  flex: 1;
+  padding: 4px 8px;
+  border-radius: var(--r-widget);
+  border: 1px solid var(--border-soft);
+  background: var(--panel-sunken);
+  color: var(--text-soft);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.bcf-source-tab:hover:not(:disabled) {
+  border-color: var(--info-border-strong);
+  color: var(--info);
+}
+
+.bcf-source-tab.is-active {
+  background: var(--info-soft);
+  border-color: var(--info-border-strong);
+  color: var(--info);
+}
+
+.bcf-source-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .version-strip__empty {
   color: var(--muted);
   font-size: 0.9rem;
