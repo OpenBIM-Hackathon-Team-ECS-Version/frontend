@@ -1551,7 +1551,7 @@ button {
 
 .version-strip {
   flex: 0 0 auto;
-  height: 188px;
+  min-height: 188px;
   border-radius: var(--r-strip);
   padding: 10px 12px 12px;
   display: flex;
@@ -1660,20 +1660,18 @@ button {
   gap: 8px;
   align-items: end;
   min-height: 0;
-  max-height: 58px;
+  max-height: 80px;
   overflow: hidden;
 }
 
 .version-strip__marker-column {
   min-width: 0;
   min-height: 0;
-  max-height: 58px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-end;
   gap: 4px;
-  overflow: hidden;
 }
 
 .version-strip__marker-empty {
@@ -1752,6 +1750,16 @@ button {
   border-color: var(--resolved-border);
   background: linear-gradient(180deg, var(--resolved-soft-strong), var(--resolved-soft));
   color: var(--resolved);
+}
+
+.version-bcf-marker--validation {
+  border-color: var(--warn-border-strong);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warn) 15%, transparent), color-mix(in srgb, var(--warn) 8%, transparent));
+  color: var(--warn);
+}
+
+.version-bcf-marker--validation .version-bcf-marker__dot {
+  background: var(--warn);
 }
 
 .version-stop {
