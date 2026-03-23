@@ -4,15 +4,17 @@ import { importBcfProject, listTopics } from "../../lib/bcf";
 import {
   buildTopicHistoryByGuid,
   buildTopicLifecycle,
+  getTopicStateAtCommit,
   getTopicAnchorTimestamp,
   isResolvedStatus,
+  resolveHistoryCommitSha,
   resolveTopicCommitSha,
   type TopicHistoryEntry,
 } from "../../lib/bcfTimeline";
 import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
-import type { BCFProject } from "../../types/bcf";
+import type { BCFProject, BCFTopic } from "../../types/bcf";
 
 const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -23,6 +25,14 @@ function formatCommitTimestamp(authoredAt: string) {
   const timestamp = new Date(authoredAt);
   return Number.isNaN(timestamp.getTime()) ? authoredAt : commitTimestampFormatter.format(timestamp);
 }
+
+type TimelineTopicMarker = {
+  commitSha: string;
+  topic: BCFTopic;
+  stateTopic: BCFTopic;
+  markerIndex: string;
+  rowIndex: number;
+};
 
 export function ViewerVersionTimeline() {
   const repo = useAppStore((state) => state.repo);
@@ -143,14 +153,6 @@ export function ViewerVersionTimeline() {
     return () => window.removeEventListener("resize", updatePageSize);
   }, []);
 
-  const activeVersionCommit = useMemo(
-    () => versions.find((commit) => commit.sha === visibleVersionSha) ?? null,
-    [versions, visibleVersionSha],
-  );
-  const activeCommit = useMemo(
-    () => versions.find((commit) => commit.sha === activeSha) ?? null,
-    [activeSha, versions],
-  );
   const totalPages = Math.max(Math.ceil(versions.length / pageSize), 1);
   const clampedPage = Math.min(page, totalPages - 1);
   const visibleVersions = useMemo(() => {
@@ -250,38 +252,128 @@ export function ViewerVersionTimeline() {
   }, [authToken, repo, selectedBcfFile, selectedBranch, topics]);
 
   const topicsByVisibleSha = useMemo(() => {
-    const grouped = new Map<string, typeof topics>();
+    const grouped = new Map<string, TimelineTopicMarker[]>();
+    const versionIndexBySha = new Map(versions.map((commit, index) => [commit.sha, index]));
+    const activeIndex = activeSha ? versionIndexBySha.get(activeSha) ?? null : null;
+    const laneTopics = topics
+      .filter((topic) => {
+        const anchorSha = resolveTopicCommitSha(topic, versions, topicHistoryByGuid);
+        if (!anchorSha) {
+          return false;
+        }
+
+        const startIndex = versionIndexBySha.get(anchorSha);
+        return startIndex !== undefined && (activeIndex === null || startIndex <= activeIndex);
+      })
+      .slice()
+      .sort((left, right) => {
+        const leftAnchor = resolveTopicCommitSha(left, versions, topicHistoryByGuid);
+        const rightAnchor = resolveTopicCommitSha(right, versions, topicHistoryByGuid);
+        const leftIndex = leftAnchor ? versionIndexBySha.get(leftAnchor) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+        const rightIndex = rightAnchor ? versionIndexBySha.get(rightAnchor) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+
+        if (leftIndex !== rightIndex) {
+          return leftIndex - rightIndex;
+        }
+
+        const leftTimestamp = getTopicAnchorTimestamp(left) ?? 0;
+        const rightTimestamp = getTopicAnchorTimestamp(right) ?? 0;
+        return leftTimestamp - rightTimestamp;
+      });
+    const rowIndexByGuid = new Map(laneTopics.map((topic, index) => [topic.guid, index + 1]));
 
     visibleVersions.forEach((commit) => {
       grouped.set(commit.sha, []);
     });
 
     topics.forEach((topic) => {
-      const lifecycle = buildTopicLifecycle(topic, versions, topicHistoryByGuid);
-      if (!lifecycle) {
+      const anchorSha = resolveTopicCommitSha(topic, versions, topicHistoryByGuid);
+      if (!anchorSha) {
         return;
       }
 
-      lifecycle.visibleCommitShas.forEach((commitSha) => {
-        const bucket = grouped.get(commitSha);
+      const startIndex = versionIndexBySha.get(anchorSha);
+      if (startIndex === undefined) {
+        return;
+      }
+
+      const history = topicHistoryByGuid.get(topic.guid) ?? [];
+      const resolvedEntry = history.find((entry) => isResolvedStatus(entry.topic.topicStatus));
+      const resolvedSha = resolvedEntry ? resolveHistoryCommitSha(resolvedEntry.commit, versions) : null;
+      const resolvedIndex = resolvedSha ? versionIndexBySha.get(resolvedSha) ?? null : null;
+
+      visibleVersions.forEach((commit) => {
+        const commitIndex = versionIndexBySha.get(commit.sha);
+        if (commitIndex === undefined || commitIndex < startIndex) {
+          return;
+        }
+
+        if (activeIndex !== null && commitIndex > activeIndex && startIndex > activeIndex) {
+          return;
+        }
+
+        const stateTopic = getTopicStateAtCommit(topic, commit.sha, versions, topicHistoryByGuid);
+        const isResolvedAtCommit = isResolvedStatus(stateTopic.topicStatus);
+        if (isResolvedAtCommit && commit.sha !== anchorSha) {
+          if (resolvedSha !== commit.sha) {
+            return;
+          }
+        }
+
+        if (isResolvedAtCommit && commitIndex > startIndex) {
+          if (resolvedSha !== commit.sha) {
+            return;
+          }
+        }
+
+        if (!isResolvedAtCommit) {
+          if (resolvedIndex !== null && commitIndex > resolvedIndex) {
+            return;
+          }
+        }
+
+        if (isResolvedAtCommit && commitIndex < startIndex) {
+          return;
+        }
+
+        const bucket = grouped.get(commit.sha);
         if (!bucket) {
           return;
         }
 
-        bucket.push(lifecycle.topic);
+        bucket.push({
+          commitSha: commit.sha,
+          topic,
+          stateTopic,
+          markerIndex: topic.index ? String(topic.index) : "",
+          rowIndex: rowIndexByGuid.get(topic.guid) ?? 1,
+        });
       });
     });
 
     grouped.forEach((bucket) => {
-      bucket.sort((left, right) => {
-        const leftTimestamp = getTopicAnchorTimestamp(left) ?? 0;
-        const rightTimestamp = getTopicAnchorTimestamp(right) ?? 0;
-        return rightTimestamp - leftTimestamp;
-      });
+      bucket.sort((left, right) => left.rowIndex - right.rowIndex);
     });
 
     return grouped;
-  }, [topicHistoryByGuid, topics, versions, visibleVersions]);
+  }, [activeSha, topicHistoryByGuid, topics, versions, visibleVersions]);
+  const markerRowCount = useMemo(() => {
+    const versionIndexBySha = new Map(versions.map((commit, index) => [commit.sha, index]));
+    const activeIndex = activeSha ? versionIndexBySha.get(activeSha) ?? null : null;
+
+    return Math.max(
+      topics.filter((topic) => {
+        const anchorSha = resolveTopicCommitSha(topic, versions, topicHistoryByGuid);
+        if (!anchorSha) {
+          return false;
+        }
+
+        const startIndex = versionIndexBySha.get(anchorSha);
+        return startIndex !== undefined && (activeIndex === null || startIndex <= activeIndex);
+      }).length,
+      1,
+    );
+  }, [activeSha, topicHistoryByGuid, topics, versions]);
 
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, totalPages - 1));
@@ -331,16 +423,6 @@ export function ViewerVersionTimeline() {
         <div className="version-strip__title">
           <h2 className="panel__title">Timeline</h2>
         </div>
-        <div className="version-strip__meta">
-          <span className="version-strip__meta-pill">{loading ? "Loading..." : `${versions.length} versions`}</span>
-          <span className="version-strip__meta-pill">
-            {activeVersionCommit
-              ? `Visible ${activeVersionCommit.shortSha}`
-              : activeCommit
-                ? `Viewing ${activeCommit.shortSha}`
-                : "Select version"}
-          </span>
-        </div>
       </div>
 
       {totalPages > 1 ? (
@@ -370,46 +452,38 @@ export function ViewerVersionTimeline() {
       {versions.length > 0 ? (
         <div
           className="version-strip__carousel"
-          style={{ "--history-columns": String(pageSize) } as CSSProperties}
+          style={{
+            "--history-columns": String(pageSize),
+            "--history-marker-rows": String(markerRowCount),
+          } as CSSProperties}
         >
           <div className="version-strip__markers" aria-label="BCF issues on timeline">
             {visibleVersions.map((commit) => {
               const commitTopics = topicsByVisibleSha.get(commit.sha) ?? [];
-              const visibleTopics = commitTopics.slice(0, 2);
-              const hiddenTopicCount = Math.max(commitTopics.length - visibleTopics.length, 0);
 
               return (
                 <div key={`bcf-${commit.sha}`} className="version-strip__marker-column">
                   {commitTopics.length > 0 ? (
                     <>
-                      {visibleTopics.map((topic) => (
+                      {commitTopics.map(({ topic, stateTopic, markerIndex, rowIndex }) => (
                       <button
                         key={topic.guid}
                         type="button"
-                        className={`version-bcf-marker ${isResolvedStatus(topic.topicStatus) ? "version-bcf-marker--resolved" : "version-bcf-marker--open"} ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
-                        title={`${topic.title} · ${topic.topicStatus ?? "Open"} · ${commit.shortSha}`}
+                        className={`version-bcf-marker ${isResolvedStatus(stateTopic.topicStatus) ? "version-bcf-marker--resolved" : "version-bcf-marker--open"} ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                        style={{ gridRow: String(markerRowCount - rowIndex + 1) }}
+                        title={`${topic.title} · ${stateTopic.topicStatus ?? "Open"} · ${commit.shortSha}`}
                         onClick={() => {
                           setActiveSha(commit.sha);
                           setSelectedTopicGuid(topic.guid);
                           setSelectedViewpointGuid(topic.viewpoints[0]?.guid ?? null);
                         }}
                       >
-                        <span className="version-bcf-marker__dot" />
+                        <span className="version-bcf-marker__index" aria-hidden="true">
+                          {isResolvedStatus(stateTopic.topicStatus) ? "✓" : markerIndex || "•"}
+                        </span>
                         <span className="version-bcf-marker__label">{topic.title}</span>
                       </button>
                       ))}
-
-                      {hiddenTopicCount > 0 ? (
-                        <button
-                          type="button"
-                          className="version-bcf-marker version-bcf-marker--count"
-                          title={`${hiddenTopicCount} more BCF issues on ${commit.shortSha}`}
-                          onClick={() => setActiveSha(commit.sha)}
-                        >
-                          <span className="version-bcf-marker__dot" />
-                          <span className="version-bcf-marker__label">+{hiddenTopicCount} more</span>
-                        </button>
-                      ) : null}
                     </>
                   ) : (
                     <span className="version-strip__marker-empty" aria-hidden="true" />
