@@ -5,6 +5,7 @@ import {
   buildTopicHistoryByGuid,
   buildTopicLifecycle,
   getTopicAnchorTimestamp,
+  isResolvedStatus,
   resolveTopicCommitSha,
   type TopicHistoryEntry,
 } from "../../lib/bcfTimeline";
@@ -12,6 +13,16 @@ import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from ".
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
 import type { BCFProject } from "../../types/bcf";
+
+const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+function formatCommitTimestamp(authoredAt: string) {
+  const timestamp = new Date(authoredAt);
+  return Number.isNaN(timestamp.getTime()) ? authoredAt : commitTimestampFormatter.format(timestamp);
+}
 
 export function ViewerVersionTimeline() {
   const repo = useAppStore((state) => state.repo);
@@ -376,7 +387,7 @@ export function ViewerVersionTimeline() {
                       <button
                         key={topic.guid}
                         type="button"
-                        className={`version-bcf-marker ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                        className={`version-bcf-marker ${isResolvedStatus(topic.topicStatus) ? "version-bcf-marker--resolved" : "version-bcf-marker--open"} ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
                         title={`${topic.title} · ${topic.topicStatus ?? "Open"} · ${commit.shortSha}`}
                         onClick={() => {
                           setActiveSha(commit.sha);
@@ -415,7 +426,7 @@ export function ViewerVersionTimeline() {
               type="button"
               className={`version-stop ${commit.sha === visibleVersionSha ? "is-active" : ""}`}
               onClick={() => setActiveSha(commit.sha)}
-              title={`${commit.shortSha} — ${commit.message.split("\n")[0]}`}
+              title={`${commit.shortSha} — ${commit.message.split("\n")[0]} — ${formatCommitTimestamp(commit.authoredAt)}`}
               aria-label={`Show version ${commit.shortSha}`}
             >
               <span className="version-stop__badge">
@@ -428,6 +439,9 @@ export function ViewerVersionTimeline() {
               <strong>{commit.shortSha}</strong>
               <p>{commit.message.split("\n")[0]}</p>
               <span className="version-stop__meta">
+                {formatCommitTimestamp(commit.authoredAt)}
+              </span>
+              <span className="version-stop__meta version-stop__meta--secondary">
                 {commit.authorName} · {commit.relativeTime}
               </span>
             </button>
