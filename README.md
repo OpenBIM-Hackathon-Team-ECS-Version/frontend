@@ -1,105 +1,99 @@
-# ECS-Version Backend
+# IFC Git Viewer: Frontend
 
-Backend server for the **openBIM Hackathon 2026** ECS-Version project. It ingests IFC building models, decomposes them into Entity-Component-System (ECS) JSON components, and serves them through a REST API with optional git-backed versioning.
+A web-based viewer for exploring IFC (Industry Foundation Classes) building models across Git history. Built for the [openBIM Hackathon 2026](https://www.buildingsmart.org/events/openbim-hackathon-2026/) by **Team ECS Version**.
 
-**Frontend:** [OpenBIM-Hackathon-Team-ECS-Version/frontend](https://github.com/OpenBIM-Hackathon-Team-ECS-Version/frontend)
+![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue) ![Vite](https://img.shields.io/badge/Vite-8-purple) ![License](https://img.shields.io/badge/License-MIT-green)
 
-## Features
+## What It Does
 
-- Upload and process `.ifc` and `.json` model files
-- IFC-to-ECS component decomposition via IfcOpenShell
-- Pluggable storage backends (file-based, MongoDB)
-- Git-backed model versioning with historical queries
-- REST API for querying models, entities, components, and versions
-- Admin UI for uploads and model management
-- IFC diff service for comparing model versions
+Connect a GitHub repository containing IFC files and navigate through its commit history in 3D. The viewer lets you:
+
+- **3D Model Visualization** — Render IFC building models in the browser using WebGPU
+- **Git Timeline** — Scrub through commits and watch the model evolve over time
+- **IFC Diffing** — Compare models between commits with visual change highlighting
+- **BCF Support** — Load and manage BCF (Building Collaboration Format) viewpoints, topics, and annotations
+- **Query Explorer** — Search and filter building components across versions
+- **Properties Panel** — Inspect detailed properties of selected building elements
 
 ## Tech Stack
 
-- **Python 3** / **Flask**
-- **IfcOpenShell** for IFC parsing
-- **Flask-CORS** for cross-origin support
-- File-based or MongoDB storage
+| Layer | Technology |
+|-------|-----------|
+| Framework | React 19, TypeScript |
+| Build | Vite 8 |
+| Styling | Tailwind CSS 4 |
+| State | Zustand |
+| 3D / IFC | @ifc-lite (parser, renderer, geometry, query, bcf) |
+| Graph | @xyflow/react, dagre |
+| Git | @octokit/rest (GitHub API) |
 
-## Quick Start
+## Getting Started
 
-```bash
-git clone https://github.com/OpenBIM-Hackathon-Team-ECS-Version/backend.git
-cd backend
+### Prerequisites
 
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+- Node.js (v18+)
+- A browser with WebGPU support (Chrome 113+, Edge 113+)
 
-cp server/.env.example server/.env
-# Edit server/.env with your settings
-
-cd server
-python server.py
-```
-
-The server starts at `http://localhost:5001` by default.
-
-### Server Options
+### Installation
 
 ```bash
-python server.py --backend fileBased --port 5001   # default
-python server.py --backend mongodbBased --port 5001
-python server.py --debug
+git clone https://github.com/OpenBIM-Hackathon-Team-ECS-Version/frontend.git
+cd frontend
+npm install
 ```
 
-## API Endpoints
+### Environment Setup
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/status` | Server status and version info |
-| `GET` | `/api/models` | List model names |
-| `GET` | `/api/models/details` | Model metadata (file-based only) |
-| `POST` | `/api/upload` | Upload an IFC or JSON file |
-| `POST` | `/api/models/delete` | Delete models (file-based only) |
-| `POST` | `/api/refresh` | Refresh in-memory index |
-| `GET` | `/api/entityTypes` | Entity types in selected models |
-| `GET` | `/api/componentTypes` | Component types in selected models |
-| `GET` | `/api/entityGuids` | Entity GUIDs by model |
-| `GET` | `/api/componentGuids` | Component GUIDs by model |
-| `GET` | `/api/components` | Full component payloads |
-| `GET` | `/api/versions` | Git-backed version history |
-| `GET` | `/api/stores` | Available store backends |
+Copy the example env file and configure the backend URL:
 
-Most read endpoints support optional `version=<git-sha>` and `models=` query parameters. See `server/README.md` for full API documentation.
+```bash
+cp .env.example .env
+```
+
+```env
+VITE_API_BASE_URL=http://localhost:5001
+```
+
+The backend API is required for IFC diffing and query operations. See the [backend repository](https://github.com/OpenBIM-Hackathon-Team-ECS-Version/backend) for setup instructions.
+
+### Development
+
+```bash
+npm run dev
+```
+
+Opens the dev server at `http://localhost:5173`.
+
+### Production Build
+
+```bash
+npm run build
+npm run preview
+```
 
 ## Project Structure
 
 ```
-backend/
-├── index.py                  # App entry point (e.g. for Vercel)
-├── requirements.txt          # Python dependencies
-├── server/
-│   ├── server.py             # Flask app and API routes
-│   ├── git_versioning.py     # Git-backed version management
-│   ├── ifc_diff_service.py   # IFC model diff/comparison
-│   ├── preindex_service.py   # Pre-indexing service
-│   ├── indexed_artifacts.py  # Indexed artifact management
-│   ├── ingestors/            # IFC-to-ECS conversion
-│   ├── dataStores/           # Storage backends
-│   ├── templates/            # Admin and viewer HTML
-│   └── utils/                # IFC utilities
+src/
+├── components/           # React UI components
+│   ├── BcfPanel/         #   BCF topics & viewpoints
+│   ├── GitGraph/         #   Commit history graph
+│   ├── Header/           #   Navigation & repo controls
+│   ├── PropertiesPanel/  #   Element properties
+│   ├── RepoFilesPanel/   #   Repository file browser
+│   ├── Timeline/         #   Version timeline
+│   └── Viewer3D/         #   3D IFC model viewer
+├── hooks/                # Custom React hooks
+├── lib/                  # Utility functions & API clients
+├── store/                # Zustand global state
+├── types/                # TypeScript type definitions
+└── shims/                # Vite plugin shims
 ```
 
-## Environment Variables
+## Related
 
-| Variable | Description |
-|----------|-------------|
-| `GIT_PUSH_REMOTE_URL` | Remote repo URL for model version commits |
-| `GIT_PUSH_BRANCH` | Branch to push version commits to |
-| `GITHUB_TOKEN` | GitHub token for HTTPS push |
-| `GIT_USER_NAME` | Git commit author name |
-| `GIT_USER_EMAIL` | Git commit author email |
-| `VERSION_REPO_ROOT` | Local git repo for version queries |
-| `VERSION_DATA_REL_PATH` | Data path inside the version repo |
-
-See `server/.env.example` for a template.
+- [Backend](https://github.com/OpenBIM-Hackathon-Team-ECS-Version/backend) — API server for IFC diffing and queries
 
 ## License
 
-[MIT](LICENSE)
+MIT
