@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
+import { listTopics, parseTopicMetadata } from "../../lib/bcf";
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
 
@@ -11,7 +12,13 @@ export function ViewerVersionTimeline() {
   const activeSha = useAppStore((state) => state.activeSha);
   const branches = useAppStore((state) => state.branches);
   const selectedBranch = useAppStore((state) => state.selectedBranch);
+  const availableBcfFiles = useAppStore((state) => state.availableBcfFiles);
+  const bcfProject = useAppStore((state) => state.bcfProject);
+  const bcfSourceName = useAppStore((state) => state.bcfSourceName);
+  const selectedTopicGuid = useAppStore((state) => state.selectedTopicGuid);
   const setActiveSha = useAppStore((state) => state.setActiveSha);
+  const setSelectedTopicGuid = useAppStore((state) => state.setSelectedTopicGuid);
+  const setSelectedViewpointGuid = useAppStore((state) => state.setSelectedViewpointGuid);
 
   const [versions, setVersions] = useState<GitCommit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -130,6 +137,35 @@ export function ViewerVersionTimeline() {
     const start = clampedPage * pageSize;
     return versions.slice(start, start + pageSize);
   }, [clampedPage, pageSize, versions]);
+  const topics = useMemo(() => listTopics(bcfProject), [bcfProject]);
+  const selectedBcfFile = useMemo(
+    () => availableBcfFiles.find((file) => file.path === bcfSourceName) ?? null,
+    [availableBcfFiles, bcfSourceName],
+  );
+  const topicsByVisibleSha = useMemo(() => {
+    const grouped = new Map<string, typeof topics>();
+
+    visibleVersions.forEach((commit) => {
+      grouped.set(commit.sha, []);
+    });
+
+    topics.forEach((topic) => {
+      const metadata = parseTopicMetadata(topic);
+      const topicSha = metadata.activeSha ?? selectedBcfFile?.sha ?? null;
+      if (!topicSha) {
+        return;
+      }
+
+      const bucket = grouped.get(topicSha);
+      if (!bucket) {
+        return;
+      }
+
+      bucket.push(topic);
+    });
+
+    return grouped;
+  }, [selectedBcfFile?.sha, topics, visibleVersions]);
 
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, totalPages - 1));
@@ -148,6 +184,28 @@ export function ViewerVersionTimeline() {
     const nextPage = Math.floor(activeIndex / pageSize);
     setPage((currentPage) => (currentPage === nextPage ? currentPage : nextPage));
   }, [pageSize, versions, visibleVersionSha]);
+
+  useEffect(() => {
+    if (!selectedTopicGuid) {
+      return;
+    }
+
+    const topic = topics.find((entry) => entry.guid === selectedTopicGuid);
+    const topicSha = topic
+      ? parseTopicMetadata(topic).activeSha ?? selectedBcfFile?.sha ?? null
+      : null;
+    if (!topicSha) {
+      return;
+    }
+
+    const topicIndex = versions.findIndex((commit) => commit.sha === topicSha);
+    if (topicIndex < 0) {
+      return;
+    }
+
+    const nextPage = Math.floor(topicIndex / pageSize);
+    setPage((currentPage) => (currentPage === nextPage ? currentPage : nextPage));
+  }, [pageSize, selectedBcfFile?.sha, selectedTopicGuid, topics, versions]);
 
   return (
     <div className="version-strip">
@@ -197,6 +255,53 @@ export function ViewerVersionTimeline() {
           className="version-strip__carousel"
           style={{ "--history-columns": String(pageSize) } as CSSProperties}
         >
+          <div className="version-strip__markers" aria-label="BCF issues on timeline">
+            {visibleVersions.map((commit) => {
+              const commitTopics = topicsByVisibleSha.get(commit.sha) ?? [];
+              const visibleTopics = commitTopics.slice(0, 2);
+              const hiddenTopicCount = Math.max(commitTopics.length - visibleTopics.length, 0);
+
+              return (
+                <div key={`bcf-${commit.sha}`} className="version-strip__marker-column">
+                  {commitTopics.length > 0 ? (
+                    <>
+                      {visibleTopics.map((topic) => (
+                      <button
+                        key={topic.guid}
+                        type="button"
+                        className={`version-bcf-marker ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                        title={`${topic.title} · ${topic.topicStatus ?? "Open"} · ${commit.shortSha}`}
+                        onClick={() => {
+                          setActiveSha(commit.sha);
+                          setSelectedTopicGuid(topic.guid);
+                          setSelectedViewpointGuid(topic.viewpoints[0]?.guid ?? null);
+                        }}
+                      >
+                        <span className="version-bcf-marker__dot" />
+                        <span className="version-bcf-marker__label">{topic.title}</span>
+                      </button>
+                      ))}
+
+                      {hiddenTopicCount > 0 ? (
+                        <button
+                          type="button"
+                          className="version-bcf-marker version-bcf-marker--count"
+                          title={`${hiddenTopicCount} more BCF issues on ${commit.shortSha}`}
+                          onClick={() => setActiveSha(commit.sha)}
+                        >
+                          <span className="version-bcf-marker__dot" />
+                          <span className="version-bcf-marker__label">+{hiddenTopicCount} more</span>
+                        </button>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="version-strip__marker-empty" aria-hidden="true" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
           {visibleVersions.map((commit, index) => (
             <button
               key={commit.sha}

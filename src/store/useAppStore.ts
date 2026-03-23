@@ -3,7 +3,14 @@ import { create } from "zustand";
 import type { IfcDataStore } from "@ifc-lite/parser";
 
 import { SAMPLE_REPO_URL } from "../lib/github";
-import type { GitBranch, GitCommit, RepoRef } from "../types/git";
+import type {
+  BCFProject,
+  BcfViewerBridge,
+  ViewerBounds,
+  ViewerCameraState,
+  ViewerSectionPlane,
+} from "../types/bcf";
+import type { GitBranch, GitCommit, RepoArtifactFile, RepoRef } from "../types/git";
 import type {
   BackendVersion,
   IfcDiffResult,
@@ -29,9 +36,22 @@ interface AppState {
   repoFileMap: Map<string, RepoFileNode>;
   selectedFilePath: string | null;
   availableIfcPaths: string[];
+  availableBcfFiles: RepoArtifactFile[];
   activeSha: string | null;
   activePath: string | null;
   prevSha: string | null;
+  bcfProject: BCFProject | null;
+  bcfSourceName: string | null;
+  bcfDirty: boolean;
+  selectedTopicGuid: string | null;
+  selectedViewpointGuid: string | null;
+  viewerApi: BcfViewerBridge | null;
+  viewerCamera: ViewerCameraState | null;
+  viewerBounds: ViewerBounds | null;
+  activeSectionPlane: ViewerSectionPlane | null;
+  viewerHiddenExpressIds: Set<number>;
+  viewerIsolatedExpressIds: Set<number> | null;
+  viewerColoredExpressIds: Map<number, [number, number, number, number]>;
   webGpuSupported: boolean;
   viewerReady: boolean;
   loading: boolean;
@@ -39,6 +59,7 @@ interface AppState {
   loadError: string | null;
   entityCount: number;
   diffHighlightEnabled: boolean;
+  diffGhostNonAffectedEnabled: boolean;
   diffResult: IfcDiffResult | null;
   queryVersions: BackendVersion[];
   selectedQueryVersion: string | null;
@@ -61,6 +82,7 @@ interface AppState {
     selectedBranch: string | null;
     commits: GitCommit[];
     availableIfcPaths: string[];
+    availableBcfFiles: RepoArtifactFile[];
     activeSha: string | null;
     activePath: string | null;
   }) => void;
@@ -73,15 +95,28 @@ interface AppState {
     availableIfcPaths: string[];
     selectedFilePath?: string | null;
   }) => void;
+  setAvailableBcfFiles: (files: RepoArtifactFile[]) => void;
   setAvailableIfcPaths: (paths: string[], activePath?: string | null) => void;
   setSelectedFilePath: (path: string | null) => void;
   setActivePath: (path: string | null) => void;
   setActiveSha: (sha: string | null) => void;
+  setBcfProject: (project: BCFProject | null, sourceName?: string | null) => void;
+  markBcfDirty: (dirty: boolean) => void;
+  setSelectedTopicGuid: (guid: string | null) => void;
+  setSelectedViewpointGuid: (guid: string | null) => void;
+  setViewerApi: (viewerApi: BcfViewerBridge | null) => void;
+  setViewerCamera: (camera: ViewerCameraState | null) => void;
+  setViewerBounds: (bounds: ViewerBounds | null) => void;
+  setActiveSectionPlane: (sectionPlane: ViewerSectionPlane | null) => void;
+  setViewerHiddenExpressIds: (ids: Set<number>) => void;
+  setViewerIsolatedExpressIds: (ids: Set<number> | null) => void;
+  setViewerColoredExpressIds: (ids: Map<number, [number, number, number, number]>) => void;
   setViewerFlags: (payload: Partial<Pick<AppState, "webGpuSupported" | "viewerReady">>) => void;
   setLoadState: (
     payload: Partial<Pick<AppState, "loading" | "loadProgress" | "loadError" | "entityCount">>,
   ) => void;
   setDiffHighlightEnabled: (enabled: boolean) => void;
+  setDiffGhostNonAffectedEnabled: (enabled: boolean) => void;
   setDiffResult: (diff: IfcDiffResult | null) => void;
   setQueryExplorerState: (
     payload: Partial<
@@ -164,9 +199,22 @@ export const useAppStore = create<AppState>((set) => ({
   repoFileMap: new Map(),
   selectedFilePath: readLastModelPath(),
   availableIfcPaths: [],
+  availableBcfFiles: [],
   activeSha: readLastActiveSha(),
   activePath: null,
   prevSha: null,
+  bcfProject: null,
+  bcfSourceName: null,
+  bcfDirty: false,
+  selectedTopicGuid: null,
+  selectedViewpointGuid: null,
+  viewerApi: null,
+  viewerCamera: null,
+  viewerBounds: null,
+  activeSectionPlane: null,
+  viewerHiddenExpressIds: new Set(),
+  viewerIsolatedExpressIds: null,
+  viewerColoredExpressIds: new Map(),
   webGpuSupported: true,
   viewerReady: false,
   loading: false,
@@ -174,6 +222,7 @@ export const useAppStore = create<AppState>((set) => ({
   loadError: null,
   entityCount: 0,
   diffHighlightEnabled: true,
+  diffGhostNonAffectedEnabled: false,
   diffResult: null,
   queryVersions: [],
   selectedQueryVersion: null,
@@ -192,7 +241,16 @@ export const useAppStore = create<AppState>((set) => ({
   previousStore: null,
   setRepoInput: (value) => set({ repoInput: value }),
   setAuthToken: (value) => set({ authToken: value }),
-  setRepoContext: ({ repo, branches, selectedBranch, commits, availableIfcPaths, activeSha, activePath }) =>
+  setRepoContext: ({
+    repo,
+    branches,
+    selectedBranch,
+    commits,
+    availableIfcPaths,
+    availableBcfFiles,
+    activeSha,
+    activePath,
+  }) =>
     set((state) => {
       const persistedPath = readLastModelPath();
       const persistedSha = readLastActiveSha();
@@ -220,15 +278,24 @@ export const useAppStore = create<AppState>((set) => ({
         repoFileMap: new Map(),
         selectedFilePath: nextSelectedFilePath,
         availableIfcPaths,
+        availableBcfFiles,
         activeSha: nextActiveSha,
         activePath: nextSelectedFilePath,
         prevSha: null,
         loadError: null,
+        diffGhostNonAffectedEnabled: false,
         diffResult: null,
         selectedExpressId: null,
         selectedEntity: null,
         currentStore: null,
         previousStore: null,
+        viewerBounds: null,
+        viewerCamera: null,
+        activeSectionPlane: null,
+        viewerHiddenExpressIds: new Set(),
+        viewerIsolatedExpressIds: null,
+        viewerColoredExpressIds: new Map(),
+        selectedViewpointGuid: null,
       };
     }),
   setSelectedBranch: (branch) => set({ selectedBranch: branch }),
@@ -258,6 +325,7 @@ export const useAppStore = create<AppState>((set) => ({
         activePath: resolvedActivePath,
       };
     }),
+  setAvailableBcfFiles: (files) => set({ availableBcfFiles: files }),
   setAvailableIfcPaths: (paths, activePath = null) =>
     set((state) => {
       const persistedPath = readLastModelPath();
@@ -297,9 +365,50 @@ export const useAppStore = create<AppState>((set) => ({
         selectedEntity: null,
       };
     }),
+  setBcfProject: (project, sourceName = null) =>
+    set((state) => {
+      const topicEntries = project ? Array.from(project.topics.keys()) : [];
+      const nextSelectedTopicGuid =
+        state.selectedTopicGuid && topicEntries.includes(state.selectedTopicGuid)
+          ? state.selectedTopicGuid
+          : topicEntries[0] ?? null;
+      const selectedTopic = nextSelectedTopicGuid ? project?.topics.get(nextSelectedTopicGuid) ?? null : null;
+      const nextSelectedViewpointGuid =
+        (selectedTopic && state.selectedViewpointGuid
+          ? selectedTopic.viewpoints.find((viewpoint) => viewpoint.guid === state.selectedViewpointGuid)?.guid ?? null
+          : null) ??
+        selectedTopic?.viewpoints[0]?.guid ??
+        null;
+
+      return {
+        bcfProject: project,
+        bcfSourceName: sourceName,
+        bcfDirty: false,
+        selectedTopicGuid: nextSelectedTopicGuid,
+        selectedViewpointGuid: nextSelectedViewpointGuid,
+      };
+    }),
+  markBcfDirty: (dirty) => set({ bcfDirty: dirty }),
+  setSelectedTopicGuid: (guid) =>
+    set((state) => {
+      const topic = guid ? state.bcfProject?.topics.get(guid) ?? null : null;
+      return {
+        selectedTopicGuid: guid,
+        selectedViewpointGuid: topic?.viewpoints[0]?.guid ?? null,
+      };
+    }),
+  setSelectedViewpointGuid: (guid) => set({ selectedViewpointGuid: guid }),
+  setViewerApi: (viewerApi) => set({ viewerApi }),
+  setViewerCamera: (camera) => set({ viewerCamera: camera }),
+  setViewerBounds: (bounds) => set({ viewerBounds: bounds }),
+  setActiveSectionPlane: (sectionPlane) => set({ activeSectionPlane: sectionPlane }),
+  setViewerHiddenExpressIds: (ids) => set({ viewerHiddenExpressIds: new Set(ids) }),
+  setViewerIsolatedExpressIds: (ids) => set({ viewerIsolatedExpressIds: ids ? new Set(ids) : null }),
+  setViewerColoredExpressIds: (ids) => set({ viewerColoredExpressIds: new Map(ids) }),
   setViewerFlags: (payload) => set(payload),
   setLoadState: (payload) => set(payload),
   setDiffHighlightEnabled: (enabled) => set({ diffHighlightEnabled: enabled }),
+  setDiffGhostNonAffectedEnabled: (enabled) => set({ diffGhostNonAffectedEnabled: enabled }),
   setDiffResult: (diff) => set({ diffResult: diff }),
   setQueryExplorerState: (payload) => set(payload),
   setQueryFilters: (payload) =>
@@ -327,6 +436,7 @@ export const useAppStore = create<AppState>((set) => ({
       loadProgress: 0,
       loadError: null,
       entityCount: 0,
+      diffGhostNonAffectedEnabled: false,
       diffResult: null,
       queryResults: [],
       queryResultCount: 0,
@@ -336,5 +446,12 @@ export const useAppStore = create<AppState>((set) => ({
       selectedEntity: null,
       currentStore: null,
       previousStore: null,
+      viewerBounds: null,
+      viewerCamera: null,
+      activeSectionPlane: null,
+      viewerHiddenExpressIds: new Set(),
+      viewerIsolatedExpressIds: null,
+      viewerColoredExpressIds: new Map(),
+      selectedViewpointGuid: null,
     }),
 }));

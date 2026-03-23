@@ -1,11 +1,12 @@
 import { useEffect, useRef } from "react";
 
+import { BcfPanel } from "./components/BcfPanel/BcfPanel";
 import { Header } from "./components/Header/Header";
-import { GitGraph } from "./components/GitGraph/GitGraph";
 import { PropertiesPanel } from "./components/PropertiesPanel/PropertiesPanel";
 import { Viewer3D } from "./components/Viewer3D/Viewer3D";
 import { ViewerVersionTimeline } from "./components/Viewer3D/ViewerVersionTimeline";
 import { useGitHub } from "./hooks/useGitHub";
+import { useTheme } from "./hooks/useTheme";
 import { useAppStore } from "./store/useAppStore";
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
   const repo = useAppStore((state) => state.repo);
 
   const { connectRepo, loadIfcPathsForSha, isConnecting } = useGitHub();
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     if (autoConnectAttemptedRef.current) {
@@ -27,15 +29,15 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Header />
+      <Header theme={theme} onToggleTheme={toggleTheme} />
 
       <main className="workspace-grid">
         <section className="workspace-grid__graph">
-          <GitGraph />
+          <BcfPanel />
         </section>
 
         <section className="workspace-grid__viewer">
-          <Viewer3D loadIfcPathsForSha={loadIfcPathsForSha} />
+          <Viewer3D loadIfcPathsForSha={loadIfcPathsForSha} theme={theme} />
         </section>
 
         <section className="workspace-grid__history">

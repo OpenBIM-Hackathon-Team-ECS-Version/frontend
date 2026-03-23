@@ -17,18 +17,33 @@ import {
   type IfcDataStore,
 } from "@ifc-lite/parser";
 import { GeometryProcessor } from "@ifc-lite/geometry";
-import { Renderer } from "@ifc-lite/renderer";
+import { Renderer, type ProjectionMode } from "@ifc-lite/renderer";
 
-import { mapGuidsToExpressIds } from "../../lib/ifcDiff";
+import type { Theme } from "../../hooks/useTheme";
+import { colorOverridesToGuids, getGuidForExpressId, mapGuidsToExpressIds } from "../../lib/bcf";
+import { BCFOverlayRenderer, computeMarkerPositions } from "../../lib/bcfOverlay";
 import { useAppStore } from "../../store/useAppStore";
+import type {
+  BCFMarker3D,
+  BCFTopic,
+  BcfViewerBridge,
+  BCFOverlayProjection,
+  ViewerBounds,
+  ViewerCameraState,
+  ViewerSectionPlane,
+} from "../../types/bcf";
 import type { IfcDiffResult, IfcPropertyGroup, SelectedIfcEntity } from "../../types/ifc";
 
-const CLEAR_COLOR: [number, number, number, number] = [0.045, 0.052, 0.08, 1];
 const MAX_RENDER_DIMENSION = 4096;
 const DIFF_COLORS = {
   added: [0.07, 0.77, 0.45, 1] as [number, number, number, number],
   changed: [1, 0.68, 0.16, 1] as [number, number, number, number],
 };
+const DIFF_GHOST_ALPHA = 0.14;
+
+function getClearColor(theme: Theme): [number, number, number, number] {
+  return theme === "light" ? [0.945, 0.961, 0.976, 1] : [0.09, 0.11, 0.16, 1];
+}
 
 function formatValue(value: unknown) {
   if (value === null || value === undefined || value === "") {
@@ -98,14 +113,72 @@ function buildSelectedEntity(store: IfcDataStore, expressId: number): SelectedIf
   };
 }
 
-export function useViewer() {
+function toViewerCameraState(renderer: Renderer): ViewerCameraState {
+  const camera = renderer.getCamera();
+  const position = camera.getPosition();
+  const target = camera.getTarget();
+  const up = camera.getUp();
+  const isOrthographic = camera.getProjectionMode() === "orthographic";
+
+  return {
+    position,
+    target,
+    up,
+    fov: camera.getFOV(),
+    isOrthographic,
+    orthoScale: isOrthographic ? camera.getOrthoSize() * 2 : undefined,
+  };
+}
+
+function toViewerBounds(renderer: Renderer): ViewerBounds | null {
+  return renderer.getModelBounds();
+}
+
+function toRendererSectionPlane(sectionPlane: ViewerSectionPlane | null) {
+  if (!sectionPlane) {
+    return undefined;
+  }
+
+  return {
+    axis: sectionPlane.axis,
+    position: sectionPlane.position,
+    enabled: sectionPlane.enabled,
+    flipped: sectionPlane.flipped,
+  };
+}
+
+function getMergedOverrides(
+  diffOverrides: Map<number, [number, number, number, number]>,
+  bcfOverrides: Map<number, [number, number, number, number]>,
+) {
+  const merged = new Map<number, [number, number, number, number]>();
+  diffOverrides.forEach((value, key) => merged.set(key, value));
+  bcfOverrides.forEach((value, key) => merged.set(key, value));
+  return merged;
+}
+
+export function useViewer(theme: Theme) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const parserRef = useRef<IfcParser | null>(null);
   const geometryRef = useRef<GeometryProcessor | null>(null);
   const rendererRef = useRef<Renderer | null>(null);
+  const overlayRendererRef = useRef<{
+    setMarkers: (markers: BCFMarker3D[]) => void;
+    setActiveMarker: (topicGuid: string | null) => void;
+    setVisible: (visible: boolean) => void;
+    updatePositions: () => void;
+    dispose: () => void;
+    onMarkerClick: (callback: (topicGuid: string) => void) => () => void;
+  } | null>(null);
+  const overlayProjectionListenersRef = useRef(new Set<() => void>());
+  const clearColorRef = useRef<[number, number, number, number]>(getClearColor(theme));
   const latestLoadRequestRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const wheelInteractionTimeoutRef = useRef<number | null>(null);
+  const diffOverridesRef = useRef<Map<number, [number, number, number, number]>>(new Map());
+  const baseEntityColorsRef = useRef<Map<number, [number, number, number, number]>>(new Map());
+  const ghostedExpressIdsRef = useRef<Set<number>>(new Set());
   const interactionRef = useRef<{
     pointerId: number | null;
     mode: "orbit" | "pan" | null;
@@ -121,12 +194,41 @@ export function useViewer() {
   });
 
   const currentStore = useAppStore((state) => state.currentStore);
+  const bcfProject = useAppStore((state) => state.bcfProject);
+  const selectedTopicGuid = useAppStore((state) => state.selectedTopicGuid);
   const selectedExpressId = useAppStore((state) => state.selectedExpressId);
+  const viewerHiddenExpressIds = useAppStore((state) => state.viewerHiddenExpressIds);
+  const viewerIsolatedExpressIds = useAppStore((state) => state.viewerIsolatedExpressIds);
+  const viewerColoredExpressIds = useAppStore((state) => state.viewerColoredExpressIds);
+  const activeSectionPlane = useAppStore((state) => state.activeSectionPlane);
+  const setViewerApi = useAppStore((state) => state.setViewerApi);
+  const setSelectedTopicGuid = useAppStore((state) => state.setSelectedTopicGuid);
+  const setSelectedViewpointGuid = useAppStore((state) => state.setSelectedViewpointGuid);
   const setViewerFlags = useAppStore((state) => state.setViewerFlags);
   const setLoadState = useAppStore((state) => state.setLoadState);
   const setCurrentStore = useAppStore((state) => state.setCurrentStore);
   const setSelectedEntity = useAppStore((state) => state.setSelectedEntity);
   const setSelectedExpressId = useAppStore((state) => state.setSelectedExpressId);
+  const setViewerCamera = useAppStore((state) => state.setViewerCamera);
+  const setViewerBounds = useAppStore((state) => state.setViewerBounds);
+  const setViewerHiddenExpressIds = useAppStore((state) => state.setViewerHiddenExpressIds);
+  const setViewerIsolatedExpressIds = useAppStore((state) => state.setViewerIsolatedExpressIds);
+  const setViewerColoredExpressIds = useAppStore((state) => state.setViewerColoredExpressIds);
+  const setActiveSectionPlane = useAppStore((state) => state.setActiveSectionPlane);
+
+  const syncViewerStateFromRenderer = useCallback(() => {
+    const renderer = rendererRef.current;
+    if (!renderer?.isReady()) {
+      return;
+    }
+
+    setViewerCamera(toViewerCameraState(renderer));
+    setViewerBounds(toViewerBounds(renderer));
+  }, [setViewerBounds, setViewerCamera]);
+
+  const notifyOverlayProjectionChanged = useCallback(() => {
+    overlayProjectionListenersRef.current.forEach((callback) => callback());
+  }, []);
 
   const renderScene = useCallback(
     (
@@ -138,13 +240,31 @@ export function useViewer() {
         return;
       }
 
+      const state = useAppStore.getState();
+      const mergedOverrides = getMergedOverrides(diffOverridesRef.current, state.viewerColoredExpressIds);
+      const scene = renderer.getScene();
+      const pipeline = renderer.getPipeline();
+      const device = renderer.getGPUDevice();
+
+      if (pipeline && device) {
+        if (mergedOverrides.size > 0) {
+          scene.setColorOverrides(mergedOverrides, device, pipeline);
+        } else {
+          scene.clearColorOverrides();
+        }
+      }
+
       renderer.render({
-        clearColor: CLEAR_COLOR,
+        clearColor: clearColorRef.current,
         isInteracting: options?.isInteracting,
         selectedId: selection,
+        hiddenIds: state.viewerHiddenExpressIds,
+        isolatedIds: state.viewerIsolatedExpressIds,
+        sectionPlane: toRendererSectionPlane(state.activeSectionPlane),
       });
+      notifyOverlayProjectionChanged();
     },
-    [],
+    [notifyOverlayProjectionChanged],
   );
 
   const resizeRenderer = useCallback(() => {
@@ -167,8 +287,56 @@ export function useViewer() {
       Math.max(Math.floor(width * scale), 1),
       Math.max(Math.floor(height * scale), 1),
     );
+    syncViewerStateFromRenderer();
     renderScene();
-  }, [renderScene]);
+    notifyOverlayProjectionChanged();
+  }, [notifyOverlayProjectionChanged, renderScene, syncViewerStateFromRenderer]);
+
+  const applyCameraState = useCallback(
+    (cameraState: ViewerCameraState) => {
+      const renderer = rendererRef.current;
+      if (!renderer) {
+        return;
+      }
+
+      const camera = renderer.getCamera();
+      camera.setProjectionMode(
+        (cameraState.isOrthographic ? "orthographic" : "perspective") as ProjectionMode,
+      );
+      camera.setPosition(cameraState.position.x, cameraState.position.y, cameraState.position.z);
+      camera.setTarget(cameraState.target.x, cameraState.target.y, cameraState.target.z);
+      camera.setUp(cameraState.up.x, cameraState.up.y, cameraState.up.z);
+      camera.setFOV(cameraState.fov);
+      if (cameraState.isOrthographic && cameraState.orthoScale) {
+        camera.setOrthoSize(cameraState.orthoScale / 2);
+      }
+
+      syncViewerStateFromRenderer();
+      renderScene();
+      notifyOverlayProjectionChanged();
+    },
+    [notifyOverlayProjectionChanged, renderScene, syncViewerStateFromRenderer],
+  );
+
+  const frameExpressId = useCallback(
+    async (expressId: number) => {
+      const renderer = rendererRef.current;
+      if (!renderer) {
+        return;
+      }
+
+      const bounds = renderer.getScene().getEntityBoundingBox(expressId);
+      if (!bounds) {
+        return;
+      }
+
+      await renderer.getCamera().frameBounds(bounds.min, bounds.max, 250);
+      syncViewerStateFromRenderer();
+      renderScene(expressId);
+      notifyOverlayProjectionChanged();
+    },
+    [notifyOverlayProjectionChanged, renderScene, syncViewerStateFromRenderer],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -176,7 +344,8 @@ export function useViewer() {
 
     async function init() {
       const canvas = canvasRef.current;
-      if (!canvas) {
+      const stage = stageRef.current;
+      if (!canvas || !stage) {
         return;
       }
 
@@ -196,6 +365,10 @@ export function useViewer() {
         parserRef.current = parser;
         geometryRef.current = geometry;
         rendererRef.current = renderer;
+        console.debug("[bcf-overlay] module loaded", {
+          hasRenderer: typeof BCFOverlayRenderer === "function",
+          hasComputeMarkerPositions: typeof computeMarkerPositions === "function",
+        });
 
         await geometry.init();
         await renderer.init();
@@ -204,6 +377,72 @@ export function useViewer() {
           return;
         }
 
+        const viewerApi: BcfViewerBridge = {
+          captureSnapshot: () => renderer.captureScreenshot(),
+          getCameraState: () => toViewerCameraState(renderer),
+          getBounds: () => toViewerBounds(renderer),
+          applyCameraState,
+          frameExpressId,
+          requestRender: () => renderScene(),
+        };
+
+        const projection: BCFOverlayProjection = {
+          projectToScreen: (worldPos: { x: number; y: number; z: number }) => {
+            const projected = renderer
+              .getCamera()
+              .projectToScreen(worldPos, canvas.clientWidth, canvas.clientHeight);
+            return projected ? { x: projected.x, y: projected.y } : null;
+          },
+          getEntityBounds: (expressId: number) => {
+            const bounds = renderer.getScene().getEntityBoundingBox(expressId);
+            return bounds ? { min: bounds.min, max: bounds.max } : null;
+          },
+          getCanvasSize: () => ({
+            width: canvas.clientWidth,
+            height: canvas.clientHeight,
+          }),
+          getCameraPosition: () => renderer.getCamera().getPosition(),
+          onCameraChange: (callback: () => void) => {
+            overlayProjectionListenersRef.current.add(callback);
+            return () => {
+              overlayProjectionListenersRef.current.delete(callback);
+            };
+          },
+        };
+
+        if (typeof BCFOverlayRenderer === "function") {
+          overlayRendererRef.current = new BCFOverlayRenderer(
+            stage,
+            projection,
+            {
+              showConnectors: true,
+              showTooltips: true,
+            },
+          );
+          console.debug("[bcf-overlay] renderer created", {
+            stageSize: {
+              width: stage.clientWidth,
+              height: stage.clientHeight,
+            },
+            canvasSize: {
+              width: canvas.clientWidth,
+              height: canvas.clientHeight,
+            },
+          });
+          overlayRendererRef.current?.onMarkerClick((topicGuid: string) => {
+            const topic = useAppStore.getState().bcfProject?.topics.get(topicGuid) ?? null;
+            console.debug("[bcf-overlay] marker clicked", {
+              topicGuid,
+              title: topic?.title ?? null,
+            });
+            setSelectedTopicGuid(topicGuid);
+            setSelectedViewpointGuid(topic?.viewpoints[0]?.guid ?? null);
+          });
+        } else {
+          console.warn("BCFOverlayRenderer export is unavailable; skipping BCF marker overlay.");
+        }
+
+        setViewerApi(viewerApi);
         setViewerFlags({
           webGpuSupported: true,
           viewerReady: true,
@@ -236,20 +475,138 @@ export function useViewer() {
       if (wheelInteractionTimeoutRef.current !== null) {
         window.clearTimeout(wheelInteractionTimeoutRef.current);
       }
+      setViewerApi(null);
+      overlayRendererRef.current?.dispose();
+      overlayRendererRef.current = null;
+      overlayProjectionListenersRef.current.clear();
       rendererRef.current?.destroy();
       geometryRef.current?.dispose();
       rendererRef.current = null;
       geometryRef.current = null;
       parserRef.current = null;
     };
-  }, [renderScene, resizeRenderer, setLoadState, setViewerFlags]);
+  }, [
+    applyCameraState,
+    frameExpressId,
+    renderScene,
+    resizeRenderer,
+    setLoadState,
+    setSelectedTopicGuid,
+    setSelectedViewpointGuid,
+    setViewerApi,
+    setViewerFlags,
+  ]);
 
   useEffect(() => {
     renderScene();
-  }, [renderScene, selectedExpressId]);
+  }, [
+    activeSectionPlane,
+    renderScene,
+    selectedExpressId,
+    viewerColoredExpressIds,
+    viewerHiddenExpressIds,
+    viewerIsolatedExpressIds,
+  ]);
+
+  useEffect(() => {
+    clearColorRef.current = getClearColor(theme);
+    renderScene();
+  }, [renderScene, theme]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const overlayRenderer = overlayRendererRef.current;
+    if (!overlayRenderer) {
+      if (bcfProject) {
+        console.debug("[bcf-overlay] skipped marker update because renderer is unavailable");
+      }
+      return;
+    }
+
+    if (!renderer || !currentStore || !bcfProject || typeof computeMarkerPositions !== "function") {
+      console.debug("[bcf-overlay] clearing markers", {
+        hasRenderer: Boolean(renderer),
+        hasStore: Boolean(currentStore),
+        hasProject: Boolean(bcfProject),
+        hasOverlayModule: typeof computeMarkerPositions === "function",
+      });
+      overlayRenderer.setMarkers([]);
+      overlayRenderer.setVisible(false);
+      return;
+    }
+
+    const guidLookup = new Map<string, number>();
+    currentStore.entityIndex.byId.forEach((_, expressId) => {
+      const attributes = extractEntityAttributesOnDemand(currentStore, expressId);
+      if (attributes.globalId) {
+        guidLookup.set(attributes.globalId, expressId);
+      }
+    });
+
+    const topics = Array.from(bcfProject.topics.values()) as BCFTopic[];
+    const unresolvedByTopic = topics.map((topic) => {
+      const selectedGuids =
+        topic.viewpoints[0]?.components?.selection
+          ?.map((component) => component.ifcGuid)
+          .filter((guid): guid is string => Boolean(guid)) ?? [];
+
+      const unresolvedGuids = selectedGuids.filter((guid) => !guidLookup.has(guid));
+
+      return {
+        topicGuid: topic.guid,
+        title: topic.title,
+        selectedGuidCount: selectedGuids.length,
+        unresolvedGuidCount: unresolvedGuids.length,
+        unresolvedGuids: unresolvedGuids.slice(0, 5),
+      };
+    });
+    const markers = computeMarkerPositions(
+      topics,
+      (ifcGuid: string) => {
+        const expressId = guidLookup.get(ifcGuid);
+        if (typeof expressId !== "number") {
+          return null;
+        }
+
+        const bounds = renderer.getScene().getEntityBoundingBox(expressId);
+        return bounds ? { min: bounds.min, max: bounds.max } : null;
+      },
+      {
+        targetDistance: renderer.getCamera().getDistance(),
+      },
+    );
+
+    console.debug("[bcf-overlay] marker computation", {
+      topicCount: topics.length,
+      guidLookupSize: guidLookup.size,
+      markerCount: markers.length,
+      selectedTopicGuid,
+      unresolvedByTopic,
+      markers: markers.map((marker) => ({
+        topicGuid: marker.topicGuid,
+        title: marker.title,
+        positionSource: marker.positionSource,
+        position: marker.position,
+        connectorAnchor: marker.connectorAnchor ?? null,
+      })),
+    });
+
+    overlayRenderer.setMarkers(markers);
+    overlayRenderer.setActiveMarker(selectedTopicGuid);
+    overlayRenderer.setVisible(markers.length > 0);
+    overlayRenderer.updatePositions();
+  }, [bcfProject, currentStore, selectedTopicGuid]);
+
+  useEffect(() => {
+    overlayRendererRef.current?.setActiveMarker(selectedTopicGuid);
+  }, [selectedTopicGuid]);
 
   const loadIfc = useCallback(
-    async (buffer: ArrayBuffer, requestKey: string) => {
+    async (
+      buffer: ArrayBuffer,
+      requestKey: string,
+      options?: { restoreCamera?: ViewerCameraState | null },
+    ) => {
       const parser = parserRef.current;
       const geometry = geometryRef.current;
       const renderer = rendererRef.current;
@@ -283,9 +640,39 @@ export function useViewer() {
         renderer.getScene().clear();
         renderer.clearCaches();
         renderer.getCamera().reset();
+        diffOverridesRef.current = new Map();
+        baseEntityColorsRef.current = new Map();
+        ghostedExpressIdsRef.current = new Set();
+        setViewerHiddenExpressIds(new Set());
+        setViewerIsolatedExpressIds(null);
+        setViewerColoredExpressIds(new Map());
+        setActiveSectionPlane(null);
         resizeRenderer();
         renderer.loadGeometry(geometryResult);
-        renderer.fitToView();
+        if (options?.restoreCamera) {
+          const camera = renderer.getCamera();
+          camera.setProjectionMode(
+            (options.restoreCamera.isOrthographic ? "orthographic" : "perspective") as ProjectionMode,
+          );
+          camera.setPosition(
+            options.restoreCamera.position.x,
+            options.restoreCamera.position.y,
+            options.restoreCamera.position.z,
+          );
+          camera.setTarget(
+            options.restoreCamera.target.x,
+            options.restoreCamera.target.y,
+            options.restoreCamera.target.z,
+          );
+          camera.setUp(options.restoreCamera.up.x, options.restoreCamera.up.y, options.restoreCamera.up.z);
+          camera.setFOV(options.restoreCamera.fov);
+          if (options.restoreCamera.isOrthographic && options.restoreCamera.orthoScale) {
+            camera.setOrthoSize(options.restoreCamera.orthoScale / 2);
+          }
+        } else {
+          renderer.fitToView();
+        }
+        syncViewerStateFromRenderer();
         renderScene(null);
 
         setCurrentStore(store);
@@ -310,27 +697,89 @@ export function useViewer() {
 
         setLoadState({
           loading: false,
-          loadError: `${message} If the sample model is too heavy for the current GPU context, try a hard refresh.`,
+          loadError: `${message} If the current model is too heavy for the GPU context, try a hard refresh.`,
         });
         throw caughtError;
       }
     },
-    [renderScene, resizeRenderer, setCurrentStore, setLoadState, setSelectedEntity],
+    [
+      renderScene,
+      resizeRenderer,
+      setActiveSectionPlane,
+      setCurrentStore,
+      setLoadState,
+      setSelectedEntity,
+      setViewerColoredExpressIds,
+      setViewerHiddenExpressIds,
+      setViewerIsolatedExpressIds,
+      syncViewerStateFromRenderer,
+    ],
   );
 
   const applyDiff = useCallback(
-    (diff: IfcDiffResult | null) => {
+    (diff: IfcDiffResult | null, ghostNonAffected: boolean) => {
       const renderer = rendererRef.current;
-      const scene = renderer?.getScene();
       const pipeline = renderer?.getPipeline();
       const device = renderer?.getGPUDevice();
+      const scene = renderer?.getScene();
 
-      if (!renderer || !scene || !currentStore || !pipeline || !device) {
+      if (!currentStore || !renderer || !pipeline || !device || !scene) {
+        diffOverridesRef.current = new Map();
+        renderScene();
         return;
       }
 
+      if (baseEntityColorsRef.current.size === 0) {
+        currentStore.entityIndex.byId.forEach((_, expressId) => {
+          const meshData = scene.getMeshData(expressId);
+          if (meshData) {
+            baseEntityColorsRef.current.set(expressId, [...meshData.color] as [number, number, number, number]);
+          }
+        });
+      }
+
+      const syncGhostedColors = (affectedExpressIds: Set<number>) => {
+        const updates = new Map<number, [number, number, number, number]>();
+        const nextGhostedIds = new Set<number>();
+
+        ghostedExpressIdsRef.current.forEach((expressId) => {
+          if (ghostNonAffected && !affectedExpressIds.has(expressId)) {
+            nextGhostedIds.add(expressId);
+            return;
+          }
+
+          const originalColor = baseEntityColorsRef.current.get(expressId);
+          if (originalColor) {
+            updates.set(expressId, originalColor);
+          }
+        });
+
+        if (ghostNonAffected) {
+          baseEntityColorsRef.current.forEach((originalColor, expressId) => {
+            if (affectedExpressIds.has(expressId)) {
+              return;
+            }
+
+            nextGhostedIds.add(expressId);
+            updates.set(expressId, [
+              originalColor[0],
+              originalColor[1],
+              originalColor[2],
+              Math.min(originalColor[3], DIFF_GHOST_ALPHA),
+            ]);
+          });
+        }
+
+        if (updates.size > 0) {
+          scene.updateMeshColors(updates, device, pipeline);
+        }
+
+        ghostedExpressIdsRef.current = nextGhostedIds;
+      };
+
       if (!diff) {
-        scene.clearColorOverrides();
+        diffOverridesRef.current = new Map();
+        syncGhostedColors(new Set());
         renderScene();
         return;
       }
@@ -338,21 +787,20 @@ export function useViewer() {
       const overrides = new Map<number, [number, number, number, number]>();
       const changedIds =
         diff.changed.size > 0 ? diff.changed : new Set(Object.keys(diff.changesById ?? {}));
+      const affectedExpressIds = new Set<number>();
 
       mapGuidsToExpressIds(currentStore, diff.added).forEach((expressId) => {
+        affectedExpressIds.add(expressId);
         overrides.set(expressId, DIFF_COLORS.added);
       });
 
       mapGuidsToExpressIds(currentStore, changedIds).forEach((expressId) => {
+        affectedExpressIds.add(expressId);
         overrides.set(expressId, DIFF_COLORS.changed);
       });
 
-      if (overrides.size > 0) {
-        scene.setColorOverrides(overrides, device, pipeline);
-      } else {
-        scene.clearColorOverrides();
-      }
-
+      syncGhostedColors(affectedExpressIds);
+      diffOverridesRef.current = overrides;
       renderScene();
     },
     [currentStore, renderScene],
@@ -374,7 +822,10 @@ export function useViewer() {
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
 
-      const picked = await renderer.pick(x, y);
+      const picked = await renderer.pick(x, y, {
+        hiddenIds: viewerHiddenExpressIds,
+        isolatedIds: viewerIsolatedExpressIds,
+      });
       if (!picked) {
         setSelectedExpressId(null);
         setSelectedEntity(null);
@@ -391,7 +842,14 @@ export function useViewer() {
       setSelectedExpressId(entity.expressId);
       renderScene(entity.expressId);
     },
-    [currentStore, renderScene, setSelectedEntity, setSelectedExpressId],
+    [
+      currentStore,
+      renderScene,
+      setSelectedEntity,
+      setSelectedExpressId,
+      viewerHiddenExpressIds,
+      viewerIsolatedExpressIds,
+    ],
   );
 
   const finishInteraction = useCallback(() => {
@@ -400,8 +858,9 @@ export function useViewer() {
     interactionRef.current.lastX = 0;
     interactionRef.current.lastY = 0;
     interactionRef.current.moved = false;
+    syncViewerStateFromRenderer();
     renderScene();
-  }, [renderScene]);
+  }, [renderScene, syncViewerStateFromRenderer]);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
     if (interactionRef.current.pointerId !== null) {
@@ -507,17 +966,29 @@ export function useViewer() {
       }
 
       wheelInteractionTimeoutRef.current = window.setTimeout(() => {
+        syncViewerStateFromRenderer();
         renderScene();
+        notifyOverlayProjectionChanged();
         wheelInteractionTimeoutRef.current = null;
       }, 120);
 
       event.preventDefault();
     },
-    [renderScene],
+    [notifyOverlayProjectionChanged, renderScene, syncViewerStateFromRenderer],
   );
 
   const handleContextMenu = useCallback((event: MouseEvent<HTMLCanvasElement>) => {
     event.preventDefault();
+  }, []);
+
+  const getSelectedGlobalId = useCallback(() => {
+    const store = useAppStore.getState().currentStore;
+    const activeExpressId = useAppStore.getState().selectedExpressId;
+    if (!store || activeExpressId === null) {
+      return null;
+    }
+
+    return getGuidForExpressId(store, activeExpressId);
   }, []);
 
   return useMemo(
@@ -531,12 +1002,64 @@ export function useViewer() {
         onWheel: handleWheel,
       },
       canvasRef,
+      stageRef,
       loadIfc,
       applyDiff,
       handleCanvasClick,
+      captureViewpointInput: async () => {
+        const renderer = rendererRef.current;
+        const store = useAppStore.getState().currentStore;
+        if (!renderer || !store) {
+          return null;
+        }
+
+        const snapshot = await renderer.captureScreenshot();
+        const state = useAppStore.getState();
+        const selectedGuid = getSelectedGlobalId();
+
+        return {
+          camera: toViewerCameraState(renderer),
+          bounds: toViewerBounds(renderer) ?? undefined,
+          sectionPlane: state.activeSectionPlane,
+          selectedGuids: selectedGuid ? [selectedGuid] : [],
+          hiddenGuids: mapSetToGuids(store, state.viewerHiddenExpressIds),
+          visibleGuids: state.viewerIsolatedExpressIds ? mapSetToGuids(store, state.viewerIsolatedExpressIds) : [],
+          coloredGuids: colorOverridesToGuids(store, state.viewerColoredExpressIds),
+          snapshot,
+        };
+      },
+      applyViewpointSelection: (params: {
+        selectedExpressId: number | null;
+        hiddenExpressIds: Set<number>;
+        isolatedExpressIds: Set<number> | null;
+        coloredExpressIds: Map<number, [number, number, number, number]>;
+        sectionPlane: ViewerSectionPlane | null;
+        camera: ViewerCameraState | null;
+      }) => {
+        setViewerHiddenExpressIds(params.hiddenExpressIds);
+        setViewerIsolatedExpressIds(params.isolatedExpressIds);
+        setViewerColoredExpressIds(params.coloredExpressIds);
+        setActiveSectionPlane(params.sectionPlane);
+        if (params.selectedExpressId !== null && currentStore) {
+          const entity = buildSelectedEntity(currentStore, params.selectedExpressId);
+          setSelectedEntity(entity);
+          setSelectedExpressId(params.selectedExpressId);
+        } else {
+          setSelectedEntity(null);
+          setSelectedExpressId(null);
+        }
+        if (params.camera) {
+          applyCameraState(params.camera);
+        } else {
+          renderScene(params.selectedExpressId);
+        }
+      },
     }),
     [
+      applyCameraState,
       applyDiff,
+      currentStore,
+      getSelectedGlobalId,
       handleCanvasClick,
       handleContextMenu,
       handlePointerCancel,
@@ -545,6 +1068,19 @@ export function useViewer() {
       handlePointerUp,
       handleWheel,
       loadIfc,
+      renderScene,
+      setActiveSectionPlane,
+      setSelectedEntity,
+      setSelectedExpressId,
+      setViewerColoredExpressIds,
+      setViewerHiddenExpressIds,
+      setViewerIsolatedExpressIds,
     ],
   );
+}
+
+function mapSetToGuids(store: IfcDataStore, ids: Set<number>) {
+  return Array.from(ids)
+    .map((expressId) => getGuidForExpressId(store, expressId))
+    .filter((guid): guid is string => Boolean(guid));
 }

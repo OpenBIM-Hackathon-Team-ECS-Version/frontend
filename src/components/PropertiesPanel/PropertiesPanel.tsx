@@ -226,12 +226,15 @@ export function PropertiesPanel() {
   useVersionedQueryExplorer();
 
   const diffHighlightEnabled = useAppStore((state) => state.diffHighlightEnabled);
+  const diffGhostNonAffectedEnabled = useAppStore((state) => state.diffGhostNonAffectedEnabled);
   const diffResult = useAppStore((state) => state.diffResult);
   const setDiffHighlightEnabled = useAppStore((state) => state.setDiffHighlightEnabled);
+  const setDiffGhostNonAffectedEnabled = useAppStore((state) => state.setDiffGhostNonAffectedEnabled);
   const added = diffResult ? Array.from(diffResult.added).sort() : [];
   const changed = diffResult ? Array.from(diffResult.changed).sort() : [];
   const deleted = diffResult ? Array.from(diffResult.deleted).sort() : [];
   const changeEntries = diffResult ? Object.entries(diffResult.changesById) : [];
+  const diffControlsEnabled = Boolean(diffResult) && diffHighlightEnabled;
 
   return (
     <aside className="panel panel--properties">
@@ -243,6 +246,16 @@ export function PropertiesPanel() {
           type="checkbox"
           checked={diffHighlightEnabled}
           onChange={(event) => setDiffHighlightEnabled(event.target.checked)}
+        />
+      </label>
+
+      <label className="results-toggle">
+        <span>Ghost non-affected</span>
+        <input
+          type="checkbox"
+          checked={diffGhostNonAffectedEnabled}
+          disabled={!diffControlsEnabled}
+          onChange={(event) => setDiffGhostNonAffectedEnabled(event.target.checked)}
         />
       </label>
 
