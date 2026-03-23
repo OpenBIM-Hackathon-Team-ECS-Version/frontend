@@ -62,6 +62,10 @@ export function BcfPanel() {
   const viewerIsolatedExpressIds = useAppStore((state) => state.viewerIsolatedExpressIds);
   const viewerColoredExpressIds = useAppStore((state) => state.viewerColoredExpressIds);
   const activeSectionPlane = useAppStore((state) => state.activeSectionPlane);
+  const validationBcfProject = useAppStore((state) => state.validationBcfProject);
+  const validationBcfLabel = useAppStore((state) => state.validationBcfLabel);
+  const validationBcfActive = useAppStore((state) => state.validationBcfActive);
+  const setValidationBcfActive = useAppStore((state) => state.setValidationBcfActive);
   const setBcfProject = useAppStore((state) => state.setBcfProject);
   const markBcfDirty = useAppStore((state) => state.markBcfDirty);
   const setSelectedTopicGuid = useAppStore((state) => state.setSelectedTopicGuid);
@@ -89,9 +93,14 @@ export function BcfPanel() {
     () => availableBcfFiles.slice().sort((left, right) => right.path.localeCompare(left.path)),
     [availableBcfFiles],
   );
-  const topics = useMemo(
-    () =>
-      listTopics(bcfProject).sort((left, right) => {
+
+  const validationTopics = useMemo(() => listTopics(validationBcfProject), [validationBcfProject]);
+
+  const activeProject = validationBcfActive ? validationBcfProject : bcfProject;
+
+  const topics = useMemo(() => {
+    const source = validationBcfActive ? validationBcfProject : bcfProject;
+    return listTopics(source).sort((left, right) => {
         const leftResolved = isResolvedStatus(left.topicStatus);
         const rightResolved = isResolvedStatus(right.topicStatus);
         if (leftResolved !== rightResolved) {
@@ -103,10 +112,11 @@ export function BcfPanel() {
         const safeLeftTimestamp = Number.isNaN(leftTimestamp) ? 0 : leftTimestamp;
         const safeRightTimestamp = Number.isNaN(rightTimestamp) ? 0 : rightTimestamp;
         return safeRightTimestamp - safeLeftTimestamp;
-      }),
-    [bcfProject],
+      });
+    },
+    [bcfProject, validationBcfActive, validationBcfProject],
   );
-  const selectedTopic = selectedTopicGuid ? bcfProject?.topics.get(selectedTopicGuid) ?? null : null;
+  const selectedTopic = selectedTopicGuid ? activeProject?.topics.get(selectedTopicGuid) ?? null : null;
   const selectedMetadata = useMemo(
     () => (selectedTopic ? parseTopicMetadata(selectedTopic) : null),
     [selectedTopic],
@@ -121,7 +131,7 @@ export function BcfPanel() {
     () => (selectedTopic ? isSameDraft(draft, topicToDraft(selectedTopic)) === false : false),
     [draft, selectedTopic],
   );
-  const canCreateTopic = Boolean(createDraft.title.trim() && bcfProject);
+  const canCreateTopic = Boolean(createDraft.title.trim() && activeProject);
   const createDraftDirty = useMemo(() => !isSameDraft(createDraft, EMPTY_DRAFT), [createDraft]);
 
   useEffect(() => {
@@ -159,6 +169,12 @@ export function BcfPanel() {
       document.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (validationBcfProject) {
+      setValidationBcfActive(true);
+    }
+  }, [validationBcfProject]);
 
   useEffect(() => {
     if (repoBcfFiles.length === 0) {
@@ -483,13 +499,36 @@ export function BcfPanel() {
     <div className="panel panel--graph panel--bcf">
       <div className="panel__eyebrow">BCF panel</div>
       <div className="graph-note">
-        {repoBcfFiles.length === 0
-          ? "No .bcf or .bcfzip files found in the repo branches we scanned."
-          : bcfProject
-            ? `${topics.length} topic${topics.length === 1 ? "" : "s"} · ${openTopicCount} active · BCF @ ${resolvedBcfVersionSha?.slice(0, 7) ?? "unknown"}${bcfDirty ? " · unsaved changes" : ""}`
-            : resolvedBcfVersionSha === null && activeSha
-              ? `No BCF snapshot exists yet for model version ${activeSha.slice(0, 7)}.`
-              : "Loading BCF issues from GitHub."}
+        {validationBcfActive
+          ? validationBcfProject
+            ? `${topics.length} topic${topics.length === 1 ? "" : "s"} · ${validationBcfLabel ?? "Validation BCF"}`
+            : "No validation BCF loaded yet. Validate a version to see results."
+          : repoBcfFiles.length === 0
+            ? "No .bcf or .bcfzip files found in the repo branches we scanned."
+            : bcfProject
+              ? `${topics.length} topic${topics.length === 1 ? "" : "s"} · ${openTopicCount} active · BCF @ ${resolvedBcfVersionSha?.slice(0, 7) ?? "unknown"}${bcfDirty ? " · unsaved changes" : ""}`
+              : resolvedBcfVersionSha === null && activeSha
+                ? `No BCF snapshot exists yet for model version ${activeSha.slice(0, 7)}.`
+                : "Loading BCF issues from GitHub."}
+      </div>
+
+      <div className="bcf-source-tabs" role="tablist" aria-label="BCF source">
+        <button
+          type="button"
+          className={`bcf-source-tab ${!validationBcfActive ? "is-active" : ""}`}
+          onClick={() => setValidationBcfActive(false)}
+        >
+          Repo BCF
+        </button>
+        <button
+          type="button"
+          className={`bcf-source-tab ${validationBcfActive ? "is-active" : ""}`}
+          onClick={() => setValidationBcfActive(true)}
+          disabled={!validationBcfProject}
+        >
+          {validationBcfLabel ?? "Validation"}
+          {validationTopics.length > 0 ? ` (${validationTopics.length})` : ""}
+        </button>
       </div>
 
       <div className="bcf-shell">
@@ -629,7 +668,7 @@ export function BcfPanel() {
         <section className="bcf-detail">
           {error ? <div className="viewer__message viewer__message--error">{error}</div> : null}
 
-          {bcfProject ? (
+          {activeProject ? (
             selectedTopic ? (
               <>
                 <div className="bcf-detail__header">

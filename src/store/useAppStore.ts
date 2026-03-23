@@ -19,6 +19,7 @@ import type {
   SelectedIfcEntity,
 } from "../types/ifc";
 import type { RepoFileNode } from "../types/repo";
+import type { ValidationResult } from "../lib/validation";
 
 const LAST_MODEL_PATH_STORAGE_KEY = "ifc-git-viewer:last-model-path";
 const LAST_ACTIVE_SHA_STORAGE_KEY = "ifc-git-viewer:last-active-sha";
@@ -74,6 +75,15 @@ interface AppState {
   selectedEntity: SelectedIfcEntity | null;
   currentStore: IfcDataStore | null;
   previousStore: IfcDataStore | null;
+  validationResults: Map<string, ValidationResult>;
+  validationBcfProject: BCFProject | null;
+  validationBcfLabel: string | null;
+  validatingCommitSha: string | null;
+  validationBcfActive: boolean;
+  setValidationResult: (commitSha: string, result: ValidationResult) => void;
+  setValidationBcf: (project: BCFProject | null, label: string | null) => void;
+  setValidatingCommitSha: (sha: string | null) => void;
+  setValidationBcfActive: (active: boolean) => void;
   setRepoInput: (value: string) => void;
   setAuthToken: (value: string) => void;
   setRepoContext: (payload: {
@@ -239,6 +249,21 @@ export const useAppStore = create<AppState>((set) => ({
   selectedEntity: null,
   currentStore: null,
   previousStore: null,
+  validationResults: new Map(),
+  validationBcfProject: null,
+  validationBcfLabel: null,
+  validatingCommitSha: null,
+  validationBcfActive: false,
+  setValidationResult: (commitSha, result) =>
+    set((state) => {
+      const next = new Map(state.validationResults);
+      next.set(commitSha, result);
+      return { validationResults: next };
+    }),
+  setValidationBcf: (project, label) =>
+    set({ validationBcfProject: project, validationBcfLabel: label }),
+  setValidatingCommitSha: (sha) => set({ validatingCommitSha: sha }),
+  setValidationBcfActive: (active) => set({ validationBcfActive: active }),
   setRepoInput: (value) => set({ repoInput: value }),
   setAuthToken: (value) => set({ authToken: value }),
   setRepoContext: ({
