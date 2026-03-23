@@ -47,7 +47,7 @@ import type { IfcDiffResult, IfcPropertyGroup, SelectedIfcEntity } from "../../t
 const MAX_RENDER_DIMENSION = 4096;
 const DIFF_COLORS = {
   added: [0.07, 0.77, 0.45, 1] as [number, number, number, number],
-  changed: [1, 0.68, 0.16, 1] as [number, number, number, number],
+  changed: [1, 0.86, 0.2, 1] as [number, number, number, number],
 };
 const DIFF_GHOST_ALPHA = 0.14;
 

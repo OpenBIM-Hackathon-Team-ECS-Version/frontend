@@ -284,7 +284,7 @@ export function BcfPanel() {
   };
 
   const handleCreateProject = () => {
-    const projectName = repo ? `${repo.owner}/${repo.name} review` : "HackPorto Review";
+    const projectName = repo ? `${repo.owner}/${repo.name} review` : "BCF << Review";
     setBcfProject(createEmptyBcfProject(projectName), "review.bcfzip");
     setSelectedTopicGuid(null);
     setSelectedViewpointGuid(null);

@@ -26,7 +26,7 @@ import type {
 
 const TOPIC_META_PREFIX = "[ifc-git-viewer]";
 
-export function createEmptyBcfProject(name = "HackPorto Review") {
+export function createEmptyBcfProject(name = "BCF << Review") {
   return createBCFProject({
     name,
     version: "3.0",
