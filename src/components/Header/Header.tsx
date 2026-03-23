@@ -26,7 +26,13 @@ function ThemeIcon({ theme }: { theme: Theme }) {
 export function Header({ theme, onToggleTheme }: HeaderProps) {
   const availableIfcPaths = useAppStore((state) => state.availableIfcPaths);
   const selectedFilePath = useAppStore((state) => state.selectedFilePath);
+  const diffHighlightEnabled = useAppStore((state) => state.diffHighlightEnabled);
+  const diffGhostNonAffectedEnabled = useAppStore((state) => state.diffGhostNonAffectedEnabled);
+  const diffResult = useAppStore((state) => state.diffResult);
   const setSelectedFilePath = useAppStore((state) => state.setSelectedFilePath);
+  const setDiffHighlightEnabled = useAppStore((state) => state.setDiffHighlightEnabled);
+  const setDiffGhostNonAffectedEnabled = useAppStore((state) => state.setDiffGhostNonAffectedEnabled);
+  const diffControlsEnabled = Boolean(diffResult) && diffHighlightEnabled;
 
   return (
     <header className="topbar">
@@ -37,21 +43,44 @@ export function Header({ theme, onToggleTheme }: HeaderProps) {
       </div>
 
       <div className="topbar__controls">
-        <button
-          type="button"
-          className="theme-toggle"
-          onClick={onToggleTheme}
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        >
-          <span className="theme-toggle__icon">
-            <ThemeIcon theme={theme} />
-          </span>
-          <span className="theme-toggle__copy">
-            <span className="theme-toggle__eyebrow">Theme</span>
-            <strong>{theme === "dark" ? "Dark mode" : "Light mode"}</strong>
-          </span>
-        </button>
+        <div className="topbar__utility-row">
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={onToggleTheme}
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          >
+            <span className="theme-toggle__icon">
+              <ThemeIcon theme={theme} />
+            </span>
+            <span className="theme-toggle__copy">
+              <span className="theme-toggle__eyebrow">Theme</span>
+              <strong>{theme === "dark" ? "Dark mode" : "Light mode"}</strong>
+            </span>
+          </button>
+
+          <div className="topbar__inspection" aria-label="Inspection controls">
+            <label className="topbar-toggle">
+              <span className="topbar-toggle__label">Diff coloring</span>
+              <input
+                type="checkbox"
+                checked={diffHighlightEnabled}
+                onChange={(event) => setDiffHighlightEnabled(event.target.checked)}
+              />
+            </label>
+
+            <label className={`topbar-toggle ${!diffControlsEnabled ? "is-disabled" : ""}`}>
+              <span className="topbar-toggle__label">Ghost context</span>
+              <input
+                type="checkbox"
+                checked={diffGhostNonAffectedEnabled}
+                disabled={!diffControlsEnabled}
+                onChange={(event) => setDiffGhostNonAffectedEnabled(event.target.checked)}
+              />
+            </label>
+          </div>
+        </div>
 
         <label className="field field--model">
           <span className="field__label">Model</span>

@@ -26,9 +26,9 @@ export function Viewer3D({ loadIfcPathsForSha, theme }: Viewer3DProps) {
   return (
     <section className="viewer">
       <div className="viewer__hud">
-        <div>
+        <div className="viewer__meta">
           <div className="panel__eyebrow">3D viewer</div>
-          <h2>{activePath ?? "Waiting for an IFC commit"}</h2>
+          <h2 className="viewer__title">{activePath ?? "Waiting for an IFC commit"}</h2>
         </div>
         <div className="viewer__stats">
           <span>{entityCount.toLocaleString()} entities</span>
