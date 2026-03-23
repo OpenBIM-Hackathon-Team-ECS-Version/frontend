@@ -27,8 +27,8 @@ function formatCommitTimestamp(authoredAt: string) {
 export function ViewerVersionTimeline() {
   const repo = useAppStore((state) => state.repo);
   const authToken = useAppStore((state) => state.authToken);
-  const activePath = useAppStore((state) => state.activePath);
   const activeSha = useAppStore((state) => state.activeSha);
+  const activePath = useAppStore((state) => state.activePath);
   const branches = useAppStore((state) => state.branches);
   const selectedBranch = useAppStore((state) => state.selectedBranch);
   const availableBcfFiles = useAppStore((state) => state.availableBcfFiles);
@@ -329,8 +329,7 @@ export function ViewerVersionTimeline() {
     <div className="version-strip">
       <div className="version-strip__header">
         <div className="version-strip__title">
-          <span className="version-strip__label">Model history</span>
-          <strong>{activePath ?? "No IFC file selected yet"}</strong>
+          <h2 className="panel__title">Timeline</h2>
         </div>
         <div className="version-strip__meta">
           <span className="version-strip__meta-pill">{loading ? "Loading..." : `${versions.length} versions`}</span>
@@ -436,9 +435,9 @@ export function ViewerVersionTimeline() {
                     ? "Latest"
                     : "Version"}
               </span>
-              <strong>{commit.shortSha}</strong>
+              <strong>{formatCommitTimestamp(commit.authoredAt)}</strong>
               <span className="version-stop__meta">
-                {formatCommitTimestamp(commit.authoredAt)}
+                {commit.shortSha}
               </span>
               <p>{commit.message.split("\n")[0]}</p>
               <span className="version-stop__meta version-stop__meta--secondary">

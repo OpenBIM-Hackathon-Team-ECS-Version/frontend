@@ -135,6 +135,39 @@ export function buildTopicLifecycle(
   } satisfies TopicLifecycle;
 }
 
+export function getTopicStateAtCommit(
+  topic: BCFTopic,
+  activeSha: string,
+  versions: GitCommit[],
+  topicHistoryByGuid: TopicHistoryMap,
+) {
+  const activeIndex = versions.findIndex((commit) => commit.sha === activeSha);
+  if (activeIndex < 0) {
+    return topic;
+  }
+
+  const history = topicHistoryByGuid.get(topic.guid) ?? [];
+  let effectiveTopic: BCFTopic = topic;
+  let effectiveIndex = -1;
+
+  history.forEach((entry) => {
+    const entrySha = resolveTopicCommitSha(entry.topic, versions, topicHistoryByGuid);
+    if (!entrySha) {
+      return;
+    }
+
+    const entryIndex = versions.findIndex((commit) => commit.sha === entrySha);
+    if (entryIndex < 0 || entryIndex > activeIndex || entryIndex < effectiveIndex) {
+      return;
+    }
+
+    effectiveTopic = entry.topic;
+    effectiveIndex = entryIndex;
+  });
+
+  return effectiveTopic;
+}
+
 export async function buildTopicHistoryByGuid(params: {
   authToken?: string;
   bcfPath: string;

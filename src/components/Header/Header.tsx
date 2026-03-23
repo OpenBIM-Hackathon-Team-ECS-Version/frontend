@@ -40,36 +40,37 @@ export function Header({ theme, onToggleTheme }: HeaderProps) {
         <div className="topbar__brand-head">
           <div className="topbar__brand-title">
             <h1>
-              <span>BCF &lt;&lt;</span>
-              <sup>Time Machine</sup>
+              <span className="topbar__brand-primary">BCF</span>
+              <span className="topbar__brand-secondary">Time Machine</span>
+              <sup>&lt;&lt;</sup>
             </h1>
           </div>
-
-          <label className="field field--model">
-            <span className="field__label">Model</span>
-            <select
-              value={selectedFilePath ?? ""}
-              onChange={(event) => setSelectedFilePath(event.target.value || null)}
-              disabled={availableIfcPaths.length === 0}
-            >
-              <option value="" disabled>
-                Select IFC model
-              </option>
-              {availableIfcPaths.map((path) => (
-                <option key={path} value={path}>
-                  {path}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
 
         <div className="topbar__brand-meta">
-          <p>Review BIM issues across version history.</p>
+          <p>Review Models and Topics across version history.</p>
         </div>
       </div>
 
       <div className="topbar__controls">
+        <label className="field field--model">
+          <span className="field__label">Model</span>
+          <select
+            value={selectedFilePath ?? ""}
+            onChange={(event) => setSelectedFilePath(event.target.value || null)}
+            disabled={availableIfcPaths.length === 0}
+          >
+            <option value="" disabled>
+              Select IFC model
+            </option>
+            {availableIfcPaths.map((path) => (
+              <option key={path} value={path}>
+                {path}
+              </option>
+            ))}
+          </select>
+        </label>
+
         <div className="topbar__utility-row">
           <button
             type="button"
