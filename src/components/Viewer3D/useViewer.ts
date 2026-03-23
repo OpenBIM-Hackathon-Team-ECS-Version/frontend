@@ -17,7 +17,7 @@ import {
   IfcParser,
   type IfcDataStore,
 } from "@ifc-lite/parser";
-import { GeometryProcessor } from "@ifc-lite/geometry";
+import { GeometryProcessor, type GeometryResult } from "@ifc-lite/geometry";
 import { Renderer, type ProjectionMode } from "@ifc-lite/renderer";
 
 import type { Theme } from "../../hooks/useTheme";
@@ -27,7 +27,13 @@ import {
   importBcfProject,
   mapGuidsToExpressIds,
 } from "../../lib/bcf";
-import { buildTopicHistoryByGuid, buildTopicLifecycle, type TopicHistoryMap } from "../../lib/bcfTimeline";
+import {
+  buildTopicHistoryByGuid,
+  buildTopicLifecycle,
+  getTopicStateAtCommit,
+  resolveTopicCommitSha,
+  type TopicHistoryMap,
+} from "../../lib/bcfTimeline";
 import { BCFOverlayRenderer, computeMarkerPositions } from "../../lib/bcfOverlay";
 import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from "../../lib/github";
 import { useAppStore } from "../../store/useAppStore";
@@ -167,6 +173,38 @@ function getMergedOverrides(
   return merged;
 }
 
+function collectIfcSpaceExpressIds(store: IfcDataStore | null): Set<number> {
+  if (!store) {
+    return new Set();
+  }
+
+  const hiddenIds = new Set<number>();
+  store.entityIndex.byId.forEach((entityRef, expressId) => {
+    if (entityRef.type === "IfcSpace") {
+      hiddenIds.add(expressId);
+    }
+  });
+
+  return hiddenIds;
+}
+
+function removeIfcSpacesFromGeometry(geometryResult: GeometryResult): GeometryResult {
+  const filteredMeshes = geometryResult.meshes.filter((mesh) => mesh.ifcType !== "IfcSpace");
+  if (filteredMeshes.length === geometryResult.meshes.length) {
+    return geometryResult;
+  }
+
+  const totalTriangles = filteredMeshes.reduce((sum, mesh) => sum + mesh.indices.length / 3, 0);
+  const totalVertices = filteredMeshes.reduce((sum, mesh) => sum + mesh.positions.length / 3, 0);
+
+  return {
+    ...geometryResult,
+    meshes: filteredMeshes,
+    totalTriangles,
+    totalVertices,
+  };
+}
+
 export function useViewer(theme: Theme) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -189,6 +227,7 @@ export function useViewer(theme: Theme) {
   const diffOverridesRef = useRef<Map<number, [number, number, number, number]>>(new Map());
   const baseEntityColorsRef = useRef<Map<number, [number, number, number, number]>>(new Map());
   const ghostedExpressIdsRef = useRef<Set<number>>(new Set());
+  const permanentlyHiddenExpressIdsRef = useRef<Set<number>>(new Set());
   const interactionRef = useRef<{
     pointerId: number | null;
     mode: "orbit" | "pan" | null;
@@ -214,7 +253,6 @@ export function useViewer(theme: Theme) {
   const bcfSourceName = useAppStore((state) => state.bcfSourceName);
   const selectedTopicGuid = useAppStore((state) => state.selectedTopicGuid);
   const selectedExpressId = useAppStore((state) => state.selectedExpressId);
-  const viewerHiddenExpressIds = useAppStore((state) => state.viewerHiddenExpressIds);
   const viewerIsolatedExpressIds = useAppStore((state) => state.viewerIsolatedExpressIds);
   const viewerColoredExpressIds = useAppStore((state) => state.viewerColoredExpressIds);
   const activeSectionPlane = useAppStore((state) => state.activeSectionPlane);
@@ -235,6 +273,14 @@ export function useViewer(theme: Theme) {
   const [timelineVersions, setTimelineVersions] = useState<GitCommit[]>([]);
   const [historyBcfProject, setHistoryBcfProject] = useState<BCFProject | null>(null);
   const [topicHistoryByGuid, setTopicHistoryByGuid] = useState<TopicHistoryMap>(new Map());
+
+  const getEffectiveHiddenExpressIds = useCallback((state: ReturnType<typeof useAppStore.getState>) => {
+    const hiddenIds = new Set(state.viewerHiddenExpressIds);
+    permanentlyHiddenExpressIdsRef.current.forEach((expressId) => {
+      hiddenIds.add(expressId);
+    });
+    return hiddenIds;
+  }, []);
 
   const syncViewerStateFromRenderer = useCallback(() => {
     const renderer = rendererRef.current;
@@ -278,13 +324,13 @@ export function useViewer(theme: Theme) {
         clearColor: clearColorRef.current,
         isInteracting: options?.isInteracting,
         selectedId: selection,
-        hiddenIds: state.viewerHiddenExpressIds,
+        hiddenIds: getEffectiveHiddenExpressIds(state),
         isolatedIds: state.viewerIsolatedExpressIds,
         sectionPlane: toRendererSectionPlane(state.activeSectionPlane),
       });
       notifyOverlayProjectionChanged();
     },
-    [notifyOverlayProjectionChanged],
+    [getEffectiveHiddenExpressIds, notifyOverlayProjectionChanged],
   );
 
   const selectedBcfFile = useMemo(
@@ -529,7 +575,6 @@ export function useViewer(theme: Theme) {
     renderScene,
     selectedExpressId,
     viewerColoredExpressIds,
-    viewerHiddenExpressIds,
     viewerIsolatedExpressIds,
   ]);
 
@@ -697,12 +742,20 @@ export function useViewer(theme: Theme) {
     });
 
     const allTopics = Array.from(historyBcfProject.topics.values()) as BCFTopic[];
+    const activeCommitIndex = activeSha
+      ? timelineVersions.findIndex((commit) => commit.sha === activeSha)
+      : -1;
     const topics =
-      activeSha && timelineVersions.length > 0
+      activeCommitIndex >= 0
         ? allTopics.filter((topic) => {
-            const lifecycle = buildTopicLifecycle(topic, timelineVersions, topicHistoryByGuid);
-            return lifecycle?.visibleCommitShas.includes(activeSha) ?? false;
-          })
+            const anchorSha = resolveTopicCommitSha(topic, timelineVersions, topicHistoryByGuid);
+            if (!anchorSha) {
+              return false;
+            }
+
+            const anchorIndex = timelineVersions.findIndex((commit) => commit.sha === anchorSha);
+            return anchorIndex >= 0 && anchorIndex <= activeCommitIndex;
+          }).map((topic) => getTopicStateAtCommit(topic, activeSha!, timelineVersions, topicHistoryByGuid))
         : allTopics;
 
     const unresolvedByTopic = topics.map((topic) => {
@@ -793,7 +846,7 @@ export function useViewer(theme: Theme) {
           },
         });
 
-        const geometryResult = await geometry.process(uint8);
+        const geometryResult = removeIfcSpacesFromGeometry(await geometry.process(uint8));
         if (latestLoadRequestRef.current !== requestKey) {
           return null;
         }
@@ -804,6 +857,7 @@ export function useViewer(theme: Theme) {
         diffOverridesRef.current = new Map();
         baseEntityColorsRef.current = new Map();
         ghostedExpressIdsRef.current = new Set();
+        permanentlyHiddenExpressIdsRef.current = collectIfcSpaceExpressIds(store);
         setViewerHiddenExpressIds(new Set());
         setViewerIsolatedExpressIds(null);
         setViewerColoredExpressIds(new Map());
@@ -984,7 +1038,7 @@ export function useViewer(theme: Theme) {
       const y = event.clientY - rect.top;
 
       const picked = await renderer.pick(x, y, {
-        hiddenIds: viewerHiddenExpressIds,
+        hiddenIds: getEffectiveHiddenExpressIds(useAppStore.getState()),
         isolatedIds: viewerIsolatedExpressIds,
       });
       if (!picked) {
@@ -1008,7 +1062,7 @@ export function useViewer(theme: Theme) {
       renderScene,
       setSelectedEntity,
       setSelectedExpressId,
-      viewerHiddenExpressIds,
+      getEffectiveHiddenExpressIds,
       viewerIsolatedExpressIds,
     ],
   );
@@ -1183,7 +1237,7 @@ export function useViewer(theme: Theme) {
           bounds: toViewerBounds(renderer) ?? undefined,
           sectionPlane: state.activeSectionPlane,
           selectedGuids: selectedGuid ? [selectedGuid] : [],
-          hiddenGuids: mapSetToGuids(store, state.viewerHiddenExpressIds),
+          hiddenGuids: mapSetToGuids(store, getEffectiveHiddenExpressIds(state)),
           visibleGuids: state.viewerIsolatedExpressIds ? mapSetToGuids(store, state.viewerIsolatedExpressIds) : [],
           coloredGuids: colorOverridesToGuids(store, state.viewerColoredExpressIds),
           snapshot,
@@ -1221,6 +1275,7 @@ export function useViewer(theme: Theme) {
       applyDiff,
       currentStore,
       getSelectedGlobalId,
+      getEffectiveHiddenExpressIds,
       handleCanvasClick,
       handleContextMenu,
       handlePointerCancel,

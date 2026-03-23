@@ -27,6 +27,28 @@ const STATUS_LABEL: Record<ImpactedChange["status"], string> = {
   deleted: "Deleted",
 };
 
+function isNumericMetadata(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 && /^\d+$/.test(trimmed);
+}
+
+function stripTrailingNumericSuffix(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.replace(/\s*[:\-]+\s*\d+\s*$/, "").trim() || trimmed;
+}
+
 function summarizeComponent(component: QueryComponentRecord) {
   const summaryParts = [
     component.entityType,
@@ -57,9 +79,9 @@ function summarizeComponent(component: QueryComponentRecord) {
 
 function getReadableTitle(detail: IfcDiffDetail | null, globalId: string) {
   return (
-    detail?.name?.trim() ||
+    stripTrailingNumericSuffix(detail?.name) ||
     detail?.objectType?.trim() ||
-    detail?.tag?.trim() ||
+    (isNumericMetadata(detail?.tag) ? null : detail?.tag?.trim()) ||
     detail?.type ||
     globalId
   );
@@ -70,7 +92,7 @@ function getReadableSubtitle(detail: IfcDiffDetail | null, changedFields: string
     detail?.type ?? null,
     detail?.previousType && detail.previousType !== detail.type ? `was ${detail.previousType}` : null,
     detail?.objectType ?? null,
-    detail?.tag ?? null,
+    isNumericMetadata(detail?.tag) ? null : detail?.tag ?? null,
     changedFields.length > 0 ? `${changedFields.length} field${changedFields.length === 1 ? "" : "s"} changed` : null,
   ].filter(Boolean);
 
@@ -169,7 +191,7 @@ function ImpactedComponentsList({
     <section className="results-section">
       <header className="results-section__header">
         <h3>Impacted elements</h3>
-        <p>Prioritized for review before raw IFC identifiers.</p>
+        <p>Prioritized for review.</p>
       </header>
 
       <div className="impact-list">
@@ -177,7 +199,7 @@ function ImpactedComponentsList({
           <button
             key={item.globalId}
             type="button"
-            className={`impact-card ${item.globalId === activeId ? "is-active" : ""}`}
+            className={`impact-card impact-card--${item.status} ${item.globalId === activeId ? "is-active" : ""}`}
             onClick={() => onSelect(item.globalId)}
           >
             <div className="impact-card__topline">
@@ -186,7 +208,6 @@ function ImpactedComponentsList({
             </div>
             <strong>{item.title}</strong>
             <span>{item.subtitle}</span>
-            <code>{item.globalId}</code>
           </button>
         ))}
       </div>
@@ -230,10 +251,6 @@ function SelectedChangeDetails({ item }: { item: ImpactedChange | null }) {
           <div className="results-meta-block">
             <strong>Description</strong>
             <span>{descriptor || item.detail?.description || "No descriptive fields"}</span>
-          </div>
-          <div className="results-meta-block">
-            <strong>Global ID</strong>
-            <code>{item.globalId}</code>
           </div>
           <div className="results-meta-block">
             <strong>Type context</strong>
@@ -444,7 +461,7 @@ export function PropertiesPanel() {
 
   return (
     <aside className="panel panel--properties">
-      <div className="panel__eyebrow">Results</div>
+      <h2 className="panel__title">Component Diffs</h2>
 
       {!diffResult ? (
         <div className="results-stack">

@@ -481,7 +481,7 @@ export function BcfPanel() {
 
   return (
     <div className="panel panel--graph panel--bcf">
-      <div className="panel__eyebrow">BCF panel</div>
+      <h2 className="panel__title">BCF panel</h2>
       <div className="graph-note">
         {repoBcfFiles.length === 0
           ? "No .bcf or .bcfzip files found in the repo branches we scanned."
