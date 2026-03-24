@@ -4,6 +4,14 @@ A web-based viewer for exploring IFC (Industry Foundation Classes) building mode
 
 ![React](https://img.shields.io/badge/React-19-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue) ![Vite](https://img.shields.io/badge/Vite-8-purple) ![License](https://img.shields.io/badge/License-MIT-green)
 
+## Preview
+
+<p align="center">
+  <img src="public/overview.gif" alt="IFC Git Viewer — connect a GitHub repo, scrub the commit timeline, and explore the 3D building model" width="920" />
+</p>
+
+<p align="center"><em>Screen capture: repository connection, Git history, and WebGPU-powered IFC visualization.</em></p>
+
 ## What It Does
 
 Connect a GitHub repository containing IFC files and navigate through its commit history in 3D. The viewer lets you:
