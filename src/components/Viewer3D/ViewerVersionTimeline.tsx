@@ -521,7 +521,7 @@ export function ViewerVersionTimeline() {
                   </span>
                   {validationResult ? (
                     <span
-                      className={`version-stop__validate-btn version-stop__validate-btn--result`}
+                      className={`version-stop__validate-btn version-stop__validate-btn--result ${isAllPassing(validationResult) ? "version-stop__validate-btn--pass" : "version-stop__validate-btn--fail"}`}
                       role="button"
                       tabIndex={0}
                       onClick={(e) => {
@@ -537,14 +537,11 @@ export function ViewerVersionTimeline() {
                       title={isAllPassing(validationResult) ? "All checks passed — view in BCF panel" : "Checks failed — view in BCF panel"}
                     >
                       <span className="version-stop__validate-icon" aria-hidden="true">
-                        {isAllPassing(validationResult) ? "✓" : "!"}
+                        <img src="/ifc-logo-clean.png" alt="" className="version-stop__validate-logo" />
                       </span>
                       <span className="version-stop__validate-label">
                         {isAllPassing(validationResult) ? "Passed" : "Issues"}
                       </span>
-                      <span
-                        className={`version-stop__validation-dot ${isAllPassing(validationResult) ? "version-stop__validation-dot--pass" : "version-stop__validation-dot--fail"}`}
-                      />
                     </span>
                   ) : (
                     <span
@@ -569,7 +566,7 @@ export function ViewerVersionTimeline() {
                       title={`Validate ${commit.shortSha}`}
                     >
                       <span className="version-stop__validate-icon" aria-hidden="true">
-                        ✓
+                        <img src="/ifc-logo-clean.png" alt="" className="version-stop__validate-logo" />
                       </span>
                       <span className="version-stop__validate-label">
                         {isValidating ? "Checking" : "Validate"}
