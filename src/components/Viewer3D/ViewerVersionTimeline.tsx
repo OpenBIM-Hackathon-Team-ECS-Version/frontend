@@ -12,7 +12,7 @@ import { fetchRepoFileBuffer, getFileCommitHistory, mergeBranchCommits } from ".
 import { validateFile, fetchValidationBcf, isAllPassing } from "../../lib/validation";
 import { useAppStore } from "../../store/useAppStore";
 import type { GitCommit } from "../../types/git";
-import type { BCFProject } from "../../types/bcf";
+import type { BCFProject, BCFTopic } from "../../types/bcf";
 
 const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -43,6 +43,8 @@ export function ViewerVersionTimeline() {
   const setValidatingCommitSha = useAppStore((state) => state.setValidatingCommitSha);
   const setValidationBcf = useAppStore((state) => state.setValidationBcf);
   const setValidationBcfActive = useAppStore((state) => state.setValidationBcfActive);
+  const validationBcfProject = useAppStore((state) => state.validationBcfProject);
+  const validationBcfLabel = useAppStore((state) => state.validationBcfLabel);
 
   const [versions, setVersions] = useState<GitCommit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -289,6 +291,26 @@ export function ViewerVersionTimeline() {
     return grouped;
   }, [topicHistoryByGuid, topics, versions, visibleVersions]);
 
+  const validationTopicsBySha = useMemo(() => {
+    const grouped = new Map<string, BCFTopic[]>();
+    if (!validationBcfProject || !validationBcfLabel) {
+      return grouped;
+    }
+
+    const match = validationBcfLabel.match(/@ (\w+)/);
+    if (!match) {
+      return grouped;
+    }
+    const shortSha = match[1];
+    const fullSha = versions.find((v) => v.sha.startsWith(shortSha))?.sha;
+    if (!fullSha) {
+      return grouped;
+    }
+
+    grouped.set(fullSha, Array.from(validationBcfProject.topics.values()));
+    return grouped;
+  }, [validationBcfLabel, validationBcfProject, versions]);
+
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, totalPages - 1));
   }, [totalPages]);
@@ -407,39 +429,61 @@ export function ViewerVersionTimeline() {
           <div className="version-strip__markers" aria-label="BCF issues on timeline">
             {visibleVersions.map((commit) => {
               const commitTopics = topicsByVisibleSha.get(commit.sha) ?? [];
-              const visibleTopics = commitTopics.slice(0, 2);
-              const hiddenTopicCount = Math.max(commitTopics.length - visibleTopics.length, 0);
+              const valTopics = validationTopicsBySha.get(commit.sha) ?? [];
+              type MarkerEntry = { topic: BCFTopic; source: "repo" | "validation" };
+              const allMarkers: MarkerEntry[] = [
+                ...commitTopics.map((t) => ({ topic: t, source: "repo" as const })),
+                ...valTopics.map((t) => ({ topic: t, source: "validation" as const })),
+              ];
+              const visibleMarkers = allMarkers.slice(0, 2);
+              const hiddenCount = Math.max(allMarkers.length - 2, 0);
 
               return (
                 <div key={`bcf-${commit.sha}`} className="version-strip__marker-column">
-                  {commitTopics.length > 0 ? (
+                  {allMarkers.length > 0 ? (
                     <>
-                      {visibleTopics.map((topic) => (
-                      <button
-                        key={topic.guid}
-                        type="button"
-                        className={`version-bcf-marker ${isResolvedStatus(topic.topicStatus) ? "version-bcf-marker--resolved" : "version-bcf-marker--open"} ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
-                        title={`${topic.title} · ${topic.topicStatus ?? "Open"} · ${commit.shortSha}`}
-                        onClick={() => {
-                          setActiveSha(commit.sha);
-                          setSelectedTopicGuid(topic.guid);
-                          setSelectedViewpointGuid(topic.viewpoints[0]?.guid ?? null);
-                        }}
-                      >
-                        <span className="version-bcf-marker__dot" />
-                        <span className="version-bcf-marker__label">{topic.title}</span>
-                      </button>
-                      ))}
+                      {visibleMarkers.map((entry) =>
+                        entry.source === "repo" ? (
+                          <button
+                            key={entry.topic.guid}
+                            type="button"
+                            className={`version-bcf-marker ${isResolvedStatus(entry.topic.topicStatus) ? "version-bcf-marker--resolved" : "version-bcf-marker--open"} ${entry.topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                            title={`${entry.topic.title} · ${entry.topic.topicStatus ?? "Open"} · ${commit.shortSha}`}
+                            onClick={() => {
+                              setActiveSha(commit.sha);
+                              setSelectedTopicGuid(entry.topic.guid);
+                              setSelectedViewpointGuid(entry.topic.viewpoints[0]?.guid ?? null);
+                            }}
+                          >
+                            <span className="version-bcf-marker__dot" />
+                            <span className="version-bcf-marker__label">{entry.topic.title}</span>
+                          </button>
+                        ) : (
+                          <button
+                            key={`val-${entry.topic.guid}`}
+                            type="button"
+                            className="version-bcf-marker version-bcf-marker--validation"
+                            title={`${entry.topic.title} · Validation · ${commit.shortSha}`}
+                            onClick={() => {
+                              setActiveSha(commit.sha);
+                              setValidationBcfActive(true);
+                            }}
+                          >
+                            <span className="version-bcf-marker__dot" />
+                            <span className="version-bcf-marker__label">{entry.topic.title}</span>
+                          </button>
+                        ),
+                      )}
 
-                      {hiddenTopicCount > 0 ? (
+                      {hiddenCount > 0 ? (
                         <button
                           type="button"
                           className="version-bcf-marker version-bcf-marker--count"
-                          title={`${hiddenTopicCount} more BCF issues on ${commit.shortSha}`}
+                          title={`${hiddenCount} more issues on ${commit.shortSha}`}
                           onClick={() => setActiveSha(commit.sha)}
                         >
                           <span className="version-bcf-marker__dot" />
-                          <span className="version-bcf-marker__label">+{hiddenTopicCount} more</span>
+                          <span className="version-bcf-marker__label">+{hiddenCount} more</span>
                         </button>
                       ) : null}
                     </>
