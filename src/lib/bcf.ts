@@ -264,6 +264,7 @@ export function parseTopicMetadata(topic: BCFTopic): BcfTopicMetadata {
       repoOwner: null,
       activePath: null,
       activeSha: null,
+      createdSha: null,
     };
   }
 
@@ -275,6 +276,7 @@ export function parseTopicMetadata(topic: BCFTopic): BcfTopicMetadata {
       repoOwner: parsed.repoOwner ?? null,
       activePath: parsed.activePath ?? null,
       activeSha: parsed.activeSha ?? null,
+      createdSha: parsed.createdSha ?? null,
     };
   } catch {
     return {
@@ -282,6 +284,7 @@ export function parseTopicMetadata(topic: BCFTopic): BcfTopicMetadata {
       repoOwner: null,
       activePath: null,
       activeSha: null,
+      createdSha: null,
     };
   }
 }

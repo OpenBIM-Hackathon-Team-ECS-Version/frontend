@@ -340,14 +340,15 @@ export function useViewer(theme: Theme) {
 
   const resizeRenderer = useCallback(() => {
     const canvas = canvasRef.current;
+    const stage = stageRef.current;
     const renderer = rendererRef.current;
 
-    if (!canvas || !renderer?.isReady()) {
+    if (!canvas || !stage || !renderer?.isReady()) {
       return;
     }
 
-    const width = Math.max(Math.floor(canvas.clientWidth), 1);
-    const height = Math.max(Math.floor(canvas.clientHeight), 1);
+    const width = Math.max(Math.floor(stage.clientWidth), 1);
+    const height = Math.max(Math.floor(stage.clientHeight), 1);
     const largestDimension = Math.max(width, height);
     const scale =
       largestDimension > MAX_RENDER_DIMENSION
@@ -523,7 +524,7 @@ export function useViewer(theme: Theme) {
         resizeObserver = new ResizeObserver(() => {
           resizeRenderer();
         });
-        resizeObserver.observe(canvas);
+        resizeObserver.observe(stage);
       } catch (caughtError) {
         setViewerFlags({
           webGpuSupported: true,
@@ -1078,6 +1079,10 @@ export function useViewer(theme: Theme) {
   }, [renderScene, syncViewerStateFromRenderer]);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === "touch") {
+      return;
+    }
+
     if (interactionRef.current.pointerId !== null) {
       return;
     }
@@ -1097,6 +1102,10 @@ export function useViewer(theme: Theme) {
 
   const handlePointerMove = useCallback(
     (event: PointerEvent<HTMLCanvasElement>) => {
+      if (event.pointerType === "touch") {
+        return;
+      }
+
       const renderer = rendererRef.current;
       const interaction = interactionRef.current;
       if (!renderer || interaction.pointerId !== event.pointerId || interaction.mode === null) {
@@ -1131,6 +1140,10 @@ export function useViewer(theme: Theme) {
 
   const handlePointerUp = useCallback(
     (event: PointerEvent<HTMLCanvasElement>) => {
+      if (event.pointerType === "touch") {
+        return;
+      }
+
       if (interactionRef.current.pointerId !== event.pointerId) {
         return;
       }
@@ -1149,6 +1162,10 @@ export function useViewer(theme: Theme) {
 
   const handlePointerCancel = useCallback(
     (event: PointerEvent<HTMLCanvasElement>) => {
+      if (event.pointerType === "touch") {
+        return;
+      }
+
       if (interactionRef.current.pointerId !== event.pointerId) {
         return;
       }

@@ -19,6 +19,7 @@ export interface BcfTopicMetadata {
   repoOwner: string | null;
   activePath: string | null;
   activeSha: string | null;
+  createdSha?: string | null;
 }
 
 export interface BcfViewpointCaptureInput {

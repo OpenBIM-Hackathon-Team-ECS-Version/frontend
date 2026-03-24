@@ -335,6 +335,7 @@ export function BcfPanel() {
         repoOwner: repo?.owner ?? null,
         activePath,
         activeSha,
+        createdSha: activeSha,
       },
     });
 
@@ -358,6 +359,7 @@ export function BcfPanel() {
       if (!topic) {
         return;
       }
+      const existingMetadata = parseTopicMetadata(topic);
 
       updateTopic(topic, {
         title: draft.title.trim() || "Untitled topic",
@@ -366,6 +368,7 @@ export function BcfPanel() {
           repoOwner: repo?.owner ?? null,
           activePath,
           activeSha,
+          createdSha: existingMetadata.createdSha ?? existingMetadata.activeSha ?? activeSha,
         }),
         topicStatus: draft.topicStatus.trim() || undefined,
         topicType: draft.topicType.trim() || undefined,

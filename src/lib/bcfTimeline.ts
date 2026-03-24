@@ -50,30 +50,21 @@ export function resolveTopicCommitSha(
   topicHistoryByGuid: TopicHistoryMap,
 ) {
   const metadata = parseTopicMetadata(topic);
-  if (metadata.activeSha && versions.some((commit) => commit.sha === metadata.activeSha)) {
-    return metadata.activeSha;
+  if (metadata.createdSha && versions.some((commit) => commit.sha === metadata.createdSha)) {
+    return metadata.createdSha;
   }
 
   const historicalEntries = topicHistoryByGuid.get(topic.guid);
   const historicalBcfCommit = historicalEntries?.[0]?.commit ?? null;
-  if (historicalBcfCommit) {
-    if (versions.some((commit) => commit.sha === historicalBcfCommit.sha)) {
-      return historicalBcfCommit.sha;
-    }
+  const historicalCommitSha = historicalBcfCommit
+    ? resolveTimelineCommitSha(historicalBcfCommit, versions)
+    : null;
+  if (historicalCommitSha) {
+    return historicalCommitSha;
+  }
 
-    const historicalTimestamp = parseTimestamp(historicalBcfCommit.authoredAt);
-    if (historicalTimestamp !== null) {
-      const matchingModelCommit = [...versions]
-        .reverse()
-        .find((commit) => {
-          const authoredTimestamp = parseTimestamp(commit.authoredAt);
-          return authoredTimestamp !== null && authoredTimestamp <= historicalTimestamp;
-        });
-
-      if (matchingModelCommit) {
-        return matchingModelCommit.sha;
-      }
-    }
+  if (metadata.activeSha && versions.some((commit) => commit.sha === metadata.activeSha)) {
+    return metadata.activeSha;
   }
 
   const anchorTimestamp = getTopicAnchorTimestamp(topic);
@@ -120,7 +111,7 @@ export function buildTopicLifecycle(
 
   let endIndex = versions.length - 1;
   if (resolvedEntry) {
-    const resolvedSha = resolveTopicCommitSha(resolvedEntry.topic, versions, topicHistoryByGuid);
+    const resolvedSha = resolveTimelineCommitSha(resolvedEntry.commit, versions);
     const resolvedIndex = resolvedSha ? versions.findIndex((commit) => commit.sha === resolvedSha) : -1;
     if (resolvedIndex >= startIndex) {
       endIndex = resolvedIndex;
@@ -151,7 +142,7 @@ export function getTopicStateAtCommit(
   let effectiveIndex = -1;
 
   history.forEach((entry) => {
-    const entrySha = resolveTopicCommitSha(entry.topic, versions, topicHistoryByGuid);
+    const entrySha = resolveTimelineCommitSha(entry.commit, versions);
     if (!entrySha) {
       return;
     }
@@ -166,6 +157,26 @@ export function getTopicStateAtCommit(
   });
 
   return effectiveTopic;
+}
+
+function resolveTimelineCommitSha(targetCommit: GitCommit, versions: GitCommit[]) {
+  if (versions.some((commit) => commit.sha === targetCommit.sha)) {
+    return targetCommit.sha;
+  }
+
+  const targetTimestamp = parseTimestamp(targetCommit.authoredAt);
+  if (targetTimestamp === null) {
+    return null;
+  }
+
+  const matchingModelCommit = [...versions]
+    .reverse()
+    .find((commit) => {
+      const authoredTimestamp = parseTimestamp(commit.authoredAt);
+      return authoredTimestamp !== null && authoredTimestamp <= targetTimestamp;
+    });
+
+  return matchingModelCommit?.sha ?? null;
 }
 
 export async function buildTopicHistoryByGuid(params: {
