@@ -26,13 +26,25 @@ function formatCommitTimestamp(authoredAt: string) {
   return Number.isNaN(timestamp.getTime()) ? authoredAt : commitTimestampFormatter.format(timestamp);
 }
 
-type TimelineTopicMarker = {
+type SwimlaneDot = {
+  columnIndex: number;
   commitSha: string;
-  topic: BCFTopic;
   stateTopic: BCFTopic;
-  markerIndex: string;
-  rowIndex: number;
 };
+
+type SwimlaneLaneData = {
+  topic: BCFTopic;
+  markerIndex: string;
+  dots: SwimlaneDot[];
+  dotsByColumn: Map<number, SwimlaneDot>;
+  firstColumn: number;
+  lastColumn: number;
+  extendsBefore: boolean;
+  extendsAfter: boolean;
+  isResolved: boolean;
+};
+
+const MAX_VISIBLE_LANES = 5;
 
 export function ViewerVersionTimeline() {
   const repo = useAppStore((state) => state.repo);
@@ -61,6 +73,7 @@ export function ViewerVersionTimeline() {
   const [pageSize, setPageSize] = useState(6);
   const [historyBcfProject, setHistoryBcfProject] = useState<BCFProject | null>(null);
   const [topicHistoryByGuid, setTopicHistoryByGuid] = useState<Map<string, TopicHistoryEntry[]>>(new Map());
+  const [lanesExpanded, setLanesExpanded] = useState(false);
 
   useEffect(() => {
     if (!repo || !activePath) {
@@ -265,17 +278,25 @@ export function ViewerVersionTimeline() {
     };
   }, [authToken, repo, selectedBcfFile, selectedBranch, topics]);
 
-  const topicsByVisibleSha = useMemo(() => {
-    const grouped = new Map<string, TimelineTopicMarker[]>();
+  const swimlanes = useMemo((): SwimlaneLaneData[] => {
     const versionIndexBySha = new Map(versions.map((commit, index) => [commit.sha, index]));
     const activeIndex = activeSha ? versionIndexBySha.get(activeSha) ?? null : null;
-    const laneTopics = topics
+    const visibleColumnBySha = new Map(visibleVersions.map((commit, index) => [commit.sha, index]));
+    const pageStartIndex =
+      visibleVersions.length > 0 ? (versionIndexBySha.get(visibleVersions[0].sha) ?? -1) : -1;
+    const pageEndIndex =
+      visibleVersions.length > 0
+        ? (versionIndexBySha.get(visibleVersions[visibleVersions.length - 1].sha) ?? -1)
+        : -1;
+
+    return topics
       .map((topic) => ({
         topic,
         lifecycle: buildTopicLifecycle(topic, versions, topicHistoryByGuid),
       }))
-      .filter((entry): entry is { topic: BCFTopic; lifecycle: NonNullable<ReturnType<typeof buildTopicLifecycle>> } =>
-        Boolean(entry.lifecycle),
+      .filter(
+        (entry): entry is { topic: BCFTopic; lifecycle: NonNullable<ReturnType<typeof buildTopicLifecycle>> } =>
+          Boolean(entry.lifecycle),
       )
       .filter(({ lifecycle }) => {
         const startIndex = versionIndexBySha.get(lifecycle.visibleCommitShas[0]);
@@ -296,53 +317,64 @@ export function ViewerVersionTimeline() {
         const leftTimestamp = getTopicAnchorTimestamp(left.topic) ?? 0;
         const rightTimestamp = getTopicAnchorTimestamp(right.topic) ?? 0;
         return leftTimestamp - rightTimestamp;
-      });
-    const rowIndexByGuid = new Map(laneTopics.map(({ topic }, index) => [topic.guid, index + 1]));
-
-    visibleVersions.forEach((commit) => {
-      grouped.set(commit.sha, []);
-    });
-
-    laneTopics.forEach(({ topic, lifecycle }) => {
-      lifecycle.visibleCommitShas.forEach((commitSha) => {
-        const bucket = grouped.get(commitSha);
-        if (!bucket) {
-          return;
+      })
+      .map(({ topic, lifecycle }): SwimlaneLaneData | null => {
+        const dots: SwimlaneDot[] = [];
+        for (const sha of lifecycle.visibleCommitShas) {
+          const colIdx = visibleColumnBySha.get(sha);
+          if (colIdx !== undefined) {
+            dots.push({
+              columnIndex: colIdx,
+              commitSha: sha,
+              stateTopic: getTopicStateAtCommit(topic, sha, versions, topicHistoryByGuid),
+            });
+          }
         }
 
-        bucket.push({
-          commitSha,
+        const lifecycleStartIdx = versionIndexBySha.get(lifecycle.visibleCommitShas[0]) ?? 0;
+        const lifecycleEndIdx =
+          versionIndexBySha.get(lifecycle.visibleCommitShas[lifecycle.visibleCommitShas.length - 1]) ?? 0;
+        const extendsBefore = pageStartIndex >= 0 && lifecycleStartIdx < pageStartIndex;
+        const extendsAfter = pageEndIndex >= 0 && lifecycleEndIdx > pageEndIndex;
+
+        if (dots.length === 0 && extendsBefore && extendsAfter) {
+          return {
+            topic,
+            markerIndex: topic.index ? String(topic.index) : "",
+            dots: [],
+            dotsByColumn: new Map(),
+            firstColumn: 0,
+            lastColumn: visibleVersions.length - 1,
+            extendsBefore: true,
+            extendsAfter: true,
+            isResolved: isResolvedStatus(topic.topicStatus),
+          };
+        }
+
+        if (dots.length === 0) {
+          return null;
+        }
+
+        const dotsByColumn = new Map(dots.map((dot) => [dot.columnIndex, dot]));
+        const firstColumn = extendsBefore ? 0 : dots[0].columnIndex;
+        const lastColumn = extendsAfter ? visibleVersions.length - 1 : dots[dots.length - 1].columnIndex;
+
+        return {
           topic,
-          stateTopic: getTopicStateAtCommit(topic, commitSha, versions, topicHistoryByGuid),
           markerIndex: topic.index ? String(topic.index) : "",
-          rowIndex: rowIndexByGuid.get(topic.guid) ?? 1,
-        });
-      });
-    });
-
-    grouped.forEach((bucket) => {
-      bucket.sort((left, right) => left.rowIndex - right.rowIndex);
-    });
-
-    return grouped;
+          dots,
+          dotsByColumn,
+          firstColumn,
+          lastColumn,
+          extendsBefore,
+          extendsAfter,
+          isResolved: isResolvedStatus(dots[dots.length - 1].stateTopic.topicStatus),
+        };
+      })
+      .filter((lane): lane is SwimlaneLaneData => lane !== null);
   }, [activeSha, topicHistoryByGuid, topics, versions, visibleVersions]);
-  const markerRowCount = useMemo(() => {
-    const versionIndexBySha = new Map(versions.map((commit, index) => [commit.sha, index]));
-    const activeIndex = activeSha ? versionIndexBySha.get(activeSha) ?? null : null;
-
-    return Math.max(
-      topics.filter((topic) => {
-        const anchorSha = resolveTopicCommitSha(topic, versions, topicHistoryByGuid);
-        if (!anchorSha) {
-          return false;
-        }
-
-        const startIndex = versionIndexBySha.get(anchorSha);
-        return startIndex !== undefined && (activeIndex === null || startIndex <= activeIndex);
-      }).length,
-      1,
-    );
-  }, [activeSha, topicHistoryByGuid, topics, versions]);
+  const displayedLanes = lanesExpanded ? swimlanes : swimlanes.slice(0, MAX_VISIBLE_LANES);
+  const overflowCount = swimlanes.length - MAX_VISIBLE_LANES;
 
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, totalPages - 1));
@@ -459,43 +491,76 @@ export function ViewerVersionTimeline() {
           className="version-strip__carousel"
           style={{
             "--history-columns": String(pageSize),
-            "--history-marker-rows": String(markerRowCount),
           } as CSSProperties}
         >
-          <div className="version-strip__markers" aria-label="BCF issues on timeline">
-            {visibleVersions.map((commit) => {
-              const commitTopics = topicsByVisibleSha.get(commit.sha) ?? [];
+          <div className="version-strip__swimlanes" aria-label="BCF issues on timeline">
+            {displayedLanes.map((lane) => (
+              <div
+                key={lane.topic.guid}
+                className={`swimlane-lane ${lane.isResolved ? "swimlane-lane--resolved" : "swimlane-lane--open"}`}
+                title={lane.topic.title}
+              >
+                {visibleVersions.map((commit, colIdx) => {
+                  const dot = lane.dotsByColumn.get(colIdx);
+                  const inRange = colIdx >= lane.firstColumn && colIdx <= lane.lastColumn;
+                  const isFirst = colIdx === lane.firstColumn && !lane.extendsBefore;
+                  const isLast = colIdx === lane.lastColumn && !lane.extendsAfter;
 
-              return (
-                <div key={`bcf-${commit.sha}`} className="version-strip__marker-column">
-                  {commitTopics.length > 0 ? (
-                    <>
-                      {commitTopics.map(({ topic, stateTopic, markerIndex, rowIndex }) => (
-                      <button
-                        key={topic.guid}
-                        type="button"
-                        className={`version-bcf-marker ${isResolvedStatus(stateTopic.topicStatus) ? "version-bcf-marker--resolved" : "version-bcf-marker--open"} ${topic.guid === selectedTopicGuid ? "is-active" : ""}`}
-                        style={{ gridRow: String(markerRowCount - rowIndex + 1) }}
-                        title={`${topic.title} · ${stateTopic.topicStatus ?? "Open"} · ${commit.shortSha}`}
-                        onClick={() => {
-                          setActiveSha(commit.sha);
-                          setSelectedTopicGuid(topic.guid);
-                          setSelectedViewpointGuid(stateTopic.viewpoints[0]?.guid ?? null);
-                        }}
-                      >
-                        <span className="version-bcf-marker__index" aria-hidden="true">
-                          {isResolvedStatus(stateTopic.topicStatus) ? "✓" : markerIndex || "•"}
-                        </span>
-                        <span className="version-bcf-marker__label">{topic.title}</span>
-                      </button>
-                      ))}
-                    </>
-                  ) : (
-                    <span className="version-strip__marker-empty" aria-hidden="true" />
-                  )}
-                </div>
-              );
-            })}
+                  if (!inRange) {
+                    return <div key={colIdx} className="swimlane-cell" />;
+                  }
+
+                  return (
+                    <div
+                      key={colIdx}
+                      className={[
+                        "swimlane-cell",
+                        "swimlane-cell--in-range",
+                        isFirst && "swimlane-cell--first",
+                        isLast && "swimlane-cell--last",
+                        isFirst && isLast && "swimlane-cell--single",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                    >
+                      {dot ? (
+                        <button
+                          type="button"
+                          className={`swimlane-dot ${isResolvedStatus(dot.stateTopic.topicStatus) ? "swimlane-dot--resolved" : "swimlane-dot--open"} ${lane.topic.guid === selectedTopicGuid ? "is-active" : ""}`}
+                          title={`${lane.topic.title} · ${dot.stateTopic.topicStatus ?? "Open"} · ${commit.shortSha}`}
+                          onClick={() => {
+                            setActiveSha(dot.commitSha);
+                            setSelectedTopicGuid(lane.topic.guid);
+                            setSelectedViewpointGuid(dot.stateTopic.viewpoints[0]?.guid ?? null);
+                          }}
+                        >
+                          <span className="swimlane-dot__icon" aria-hidden="true">
+                            {isResolvedStatus(dot.stateTopic.topicStatus) ? "✓" : lane.markerIndex || "•"}
+                          </span>
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {lane.lastColumn < visibleVersions.length - 1 && !lane.extendsAfter ? (
+                  <span
+                    className="swimlane-lane__label"
+                    style={{ gridColumn: `${lane.lastColumn + 2} / -1` }}
+                  >
+                    {lane.topic.title}
+                  </span>
+                ) : null}
+              </div>
+            ))}
+            {overflowCount > 0 ? (
+              <button
+                type="button"
+                className="swimlane-overflow"
+                onClick={() => setLanesExpanded((expanded) => !expanded)}
+              >
+                {lanesExpanded ? "Show less" : `+${overflowCount} more`}
+              </button>
+            ) : null}
           </div>
 
           {visibleVersions.map((commit, index) => {

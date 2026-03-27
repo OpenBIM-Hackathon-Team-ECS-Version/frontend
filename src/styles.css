@@ -1647,139 +1647,146 @@ button {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: repeat(var(--history-columns, 6), minmax(0, 1fr));
   gap: 8px;
   overflow: hidden;
 }
 
-.version-strip__markers {
+.version-strip__swimlanes {
   grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: end;
+  min-height: 0;
+  overflow: visible;
+}
+
+.swimlane-lane {
   display: grid;
   grid-template-columns: repeat(var(--history-columns, 6), minmax(0, 1fr));
-  gap: 8px;
-  align-items: end;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.version-strip__marker-column {
-  min-width: 0;
-  min-height: 0;
-  height: calc(var(--history-marker-rows, 1) * 26px - 4px);
-  display: grid;
-  grid-template-rows: repeat(var(--history-marker-rows, 1), 22px);
-  align-items: end;
-  gap: 4px;
-  overflow: hidden;
-}
-
-.version-strip__marker-empty {
-  display: block;
-  min-height: 1px;
-}
-
-.version-bcf-marker {
-  min-width: 0;
-  min-height: 22px;
-  align-self: end;
-  padding: 0 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border-soft);
-  background: var(--surface);
-  color: inherit;
-  display: inline-flex;
+  gap: 0 8px;
+  height: 20px;
   align-items: center;
-  gap: 6px;
-  text-align: left;
-  overflow: hidden;
-  transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    background 0.18s ease,
-    box-shadow 0.18s ease;
+  position: relative;
+  overflow: visible;
 }
 
-.version-bcf-marker:hover {
-  transform: translateY(-1px);
-  filter: saturate(1.04);
+.swimlane-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  overflow: visible;
 }
 
-.version-bcf-marker.is-active {
-  border-color: var(--info-border-strong);
-  box-shadow: 0 0 0 1px var(--info-soft-strong);
+.swimlane-cell--in-range::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  left: -4px;
+  right: -4px;
+  background: currentColor;
+  opacity: 0.2;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: 1px;
 }
 
-.version-bcf-marker__index {
+.swimlane-cell--first::before {
+  left: 50%;
+}
+
+.swimlane-cell--last::before {
+  right: 50%;
+}
+
+.swimlane-cell--single::before {
+  display: none;
+}
+
+.swimlane-dot {
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
-  border-radius: 999px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: currentColor;
+  color: white;
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: currentColor;
-  color: white;
-  font-size: 0.6rem;
-  line-height: 1;
-  font-weight: 700;
-  font-family: ui-monospace, monospace;
+  cursor: pointer;
   box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.version-bcf-marker.is-active .version-bcf-marker__index {
+.swimlane-dot__icon {
+  font-size: 0.55rem;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  line-height: 1;
+}
+
+.swimlane-dot:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 28%, transparent);
+}
+
+.swimlane-dot.is-active {
   box-shadow:
     0 0 0 3px color-mix(in srgb, currentColor 18%, transparent),
     0 0 0 5px var(--info-soft);
+  outline: 1px solid var(--info-border-strong);
 }
 
-.version-bcf-marker__label {
+.swimlane-lane--open {
+  color: var(--open);
+}
+
+.swimlane-lane--resolved {
+  color: var(--resolved);
+}
+
+.swimlane-lane__label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   line-height: 1;
   letter-spacing: 0.02em;
+  color: color-mix(in srgb, currentColor 72%, var(--text-soft));
+  align-self: center;
+  padding-left: 4px;
 }
 
-.version-bcf-marker--count {
-  border-color: var(--info-border);
-  background: linear-gradient(180deg, var(--info-soft-strong), var(--info-soft));
-  color: var(--info);
+.swimlane-overflow {
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: var(--muted);
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  width: 100%;
 }
 
-.version-bcf-marker--open {
-  border-color: var(--open-border);
-  background: linear-gradient(180deg, var(--open-soft-strong), var(--open-soft));
-  color: var(--open);
-}
-
-.version-bcf-marker--open .version-bcf-marker__index {
-  width: auto;
-  height: auto;
-  min-width: 0;
-  border-radius: 0;
-  display: inline;
-  background: transparent;
-  color: currentColor;
-  box-shadow: none;
-}
-
-.version-bcf-marker--resolved {
-  border-color: var(--resolved-border);
-  background: linear-gradient(180deg, var(--resolved-soft-strong), var(--resolved-soft));
-  color: var(--resolved);
-}
-
-.version-bcf-marker--resolved .version-bcf-marker__index {
-  background: var(--resolved);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--resolved) 18%, transparent);
-}
-
-.version-bcf-marker--resolved .version-bcf-marker__label {
-  color: color-mix(in srgb, var(--resolved) 72%, var(--text-soft));
+.swimlane-overflow:hover {
+  color: var(--text);
+  text-decoration: underline;
 }
 
 .version-stop {
@@ -2490,7 +2497,7 @@ button {
 
   .version-strip__carousel {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-columns: repeat(var(--history-columns, 6), minmax(260px, 78vw));
     overflow-x: auto;
     overflow-y: hidden;
@@ -2500,12 +2507,15 @@ button {
     padding-bottom: 4px;
   }
 
-  .version-strip__markers {
-    grid-template-columns: repeat(var(--history-columns, 6), minmax(260px, 78vw));
-    max-height: none;
+  .version-strip__swimlanes {
+    overflow: visible;
   }
 
-  .version-strip__marker-column,
+  .swimlane-lane {
+    grid-template-columns: repeat(var(--history-columns, 6), minmax(260px, 78vw));
+  }
+
+  .swimlane-cell,
   .version-stop {
     scroll-snap-align: start;
   }
